@@ -1,4 +1,4 @@
-using ICSharpCode.NRefactory.CSharp;
+using Microsoft.CodeAnalysis;
 using Mono.Cecil;
 using System.Collections.Generic;
 
@@ -106,7 +106,7 @@ namespace Bridge.Contract
             set;
         }
 
-        AstNode EmitNode
+        SyntaxNode EmitNode
         {
             get;
             set;
