@@ -1,12 +1,13 @@
-using ICSharpCode.NRefactory.CSharp;
-using ICSharpCode.NRefactory.TypeSystem;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Mono.Cecil;
 using System;
 using System.Collections.Generic;
 
 namespace Bridge.Contract
 {
-    public interface IEmitter : ILog, IAstVisitor
+    public interface IEmitter : ILog
     {
         string Tag
         {
@@ -20,13 +21,13 @@ namespace Bridge.Contract
             set;
         }
 
-        ICSharpCode.NRefactory.CSharp.AssignmentOperatorType AssignmentType
+        SyntaxKind AssignmentType
         {
             get;
             set;
         }
 
-        ICSharpCode.NRefactory.CSharp.UnaryOperatorType UnaryOperatorType
+        SyntaxKind UnaryOperatorType
         {
             get;
             set;
@@ -50,13 +51,13 @@ namespace Bridge.Contract
             set;
         }
 
-        ICSharpCode.NRefactory.CSharp.SwitchStatement AsyncSwitch
+        SwitchStatementSyntax AsyncSwitch
         {
             get;
             set;
         }
 
-        System.Collections.Generic.List<string> AsyncVariables
+        List<string> AsyncVariables
         {
             get;
             set;
@@ -76,7 +77,7 @@ namespace Bridge.Contract
 
         void SortTypesByInheritance();
 
-        System.Collections.Generic.List<IPluginDependency> CurrentDependencies
+        List<IPluginDependency> CurrentDependencies
         {
             get;
             set;
@@ -90,51 +91,51 @@ namespace Bridge.Contract
             set;
         }
 
-        ICSharpCode.NRefactory.TypeSystem.IAttribute GetAttribute(System.Collections.Generic.IEnumerable<ICSharpCode.NRefactory.TypeSystem.IAttribute> attributes, string name);
+        AttributeData GetAttribute(IEnumerable<AttributeData> attributes, string name);
 
-        Mono.Cecil.CustomAttribute GetAttribute(System.Collections.Generic.IEnumerable<Mono.Cecil.CustomAttribute> attributes, string name);
+        CustomAttribute GetAttribute(IEnumerable<CustomAttribute> attributes, string name);
 
-        Mono.Cecil.TypeDefinition GetBaseMethodOwnerTypeDefinition(string methodName, int genericParamCount);
+        TypeDefinition GetBaseMethodOwnerTypeDefinition(string methodName, int genericParamCount);
 
-        Mono.Cecil.TypeDefinition GetBaseTypeDefinition();
+        TypeDefinition GetBaseTypeDefinition();
 
-        Mono.Cecil.TypeDefinition GetBaseTypeDefinition(Mono.Cecil.TypeDefinition type);
+        TypeDefinition GetBaseTypeDefinition(TypeDefinition type);
 
-        string GetEntityName(ICSharpCode.NRefactory.CSharp.EntityDeclaration entity);
+        string GetEntityName(MemberDeclarationSyntax entity);
 
-        string GetParameterName(ICSharpCode.NRefactory.CSharp.ParameterDeclaration entity);
+        string GetParameterName(ParameterSyntax entity);
 
-        NameSemantic GetNameSemantic(IEntity member);
+        NameSemantic GetNameSemantic(ISymbol member);
 
-        string GetEntityName(ICSharpCode.NRefactory.TypeSystem.IEntity member);
+        string GetEntityName(ISymbol member);
 
-        string GetTypeName(ICSharpCode.NRefactory.TypeSystem.ITypeDefinition type, TypeDefinition typeDefinition);
+        string GetTypeName(INamedTypeSymbol type, TypeDefinition typeDefinition);
 
-        string GetLiteralEntityName(ICSharpCode.NRefactory.TypeSystem.IEntity member);
+        string GetLiteralEntityName(ISymbol member);
 
-        string GetInline(ICSharpCode.NRefactory.CSharp.EntityDeclaration method);
+        string GetInline(MemberDeclarationSyntax method);
 
-        string GetInline(ICSharpCode.NRefactory.TypeSystem.IEntity entity);
+        string GetInline(ISymbol entity);
 
-        Tuple<bool, bool, string> GetInlineCode(ICSharpCode.NRefactory.CSharp.InvocationExpression node);
+        Tuple<bool, bool, string> GetInlineCode(InvocationExpressionSyntax node);
 
-        Tuple<bool, bool, string> GetInlineCode(ICSharpCode.NRefactory.CSharp.MemberReferenceExpression node);
+        Tuple<bool, bool, string> GetInlineCode(MemberAccessExpressionSyntax node);
 
-        bool IsForbiddenInvocation(InvocationExpression node);
+        bool IsForbiddenInvocation(InvocationExpressionSyntax node);
 
-        System.Collections.Generic.IEnumerable<string> GetScript(ICSharpCode.NRefactory.CSharp.EntityDeclaration method);
+        IEnumerable<string> GetScript(MemberDeclarationSyntax method);
 
-        int GetPriority(Mono.Cecil.TypeDefinition type);
+        int GetPriority(TypeDefinition type);
 
-        Mono.Cecil.TypeDefinition GetTypeDefinition();
+        TypeDefinition GetTypeDefinition();
 
-        Mono.Cecil.TypeDefinition GetTypeDefinition(ICSharpCode.NRefactory.CSharp.AstType reference, bool safe = false);
+        TypeDefinition GetTypeDefinition(TypeSyntax reference, bool safe = false);
 
-        Mono.Cecil.TypeDefinition GetTypeDefinition(IType type);
+        TypeDefinition GetTypeDefinition(ITypeSymbol type);
 
         string GetTypeHierarchy();
 
-        ICSharpCode.NRefactory.CSharp.AstNode IgnoreBlock
+        SyntaxNode IgnoreBlock
         {
             get;
             set;
@@ -158,9 +159,9 @@ namespace Bridge.Contract
             set;
         }
 
-        bool IsInlineConst(ICSharpCode.NRefactory.TypeSystem.IMember member);
+        bool IsInlineConst(ISymbol member);
 
-        bool IsMemberConst(ICSharpCode.NRefactory.TypeSystem.IMember member);
+        bool IsMemberConst(ISymbol member);
 
         bool IsNativeMember(string fullName);
 
@@ -176,7 +177,7 @@ namespace Bridge.Contract
             set;
         }
 
-        System.Collections.Generic.List<IJumpInfo> JumpStatements
+        List<IJumpInfo> JumpStatements
         {
             get;
             set;
@@ -206,25 +207,25 @@ namespace Bridge.Contract
             set;
         }
 
-        System.Collections.Generic.Dictionary<string, ICSharpCode.NRefactory.CSharp.AstType> Locals
+        Dictionary<string, TypeSyntax> Locals
         {
             get;
             set;
         }
 
-        System.Collections.Generic.Dictionary<IVariable, string> LocalsMap
+        Dictionary<ISymbol, string> LocalsMap //  ILocalSymbol and IParameterSymbol
         {
             get;
             set;
         }
 
-        System.Collections.Generic.Dictionary<string, string> LocalsNamesMap
+        Dictionary<string, string> LocalsNamesMap
         {
             get;
             set;
         }
 
-        System.Collections.Generic.Stack<System.Collections.Generic.Dictionary<string, ICSharpCode.NRefactory.CSharp.AstType>> LocalsStack
+        Stack<Dictionary<string, TypeSyntax>> LocalsStack
         {
             get;
             set;
@@ -236,19 +237,19 @@ namespace Bridge.Contract
             set;
         }
 
-        System.Collections.Generic.IEnumerable<Mono.Cecil.MethodDefinition> MethodsGroup
+        IEnumerable<MethodDefinition> MethodsGroup
         {
             get;
             set;
         }
 
-        System.Collections.Generic.Dictionary<int, System.Text.StringBuilder> MethodsGroupBuilder
+        Dictionary<int, System.Text.StringBuilder> MethodsGroupBuilder
         {
             get;
             set;
         }
 
-        ICSharpCode.NRefactory.CSharp.AstNode NoBraceBlock
+        SyntaxNode NoBraceBlock
         {
             get;
             set;
@@ -296,7 +297,7 @@ namespace Bridge.Contract
             set;
         }
 
-        System.Collections.Generic.IEnumerable<Mono.Cecil.AssemblyDefinition> References
+        IEnumerable<AssemblyDefinition> References
         {
             get;
             set;
@@ -320,7 +321,7 @@ namespace Bridge.Contract
             set;
         }
 
-        System.Collections.Generic.IList<string> SourceFiles
+        IList<string> SourceFiles
         {
             get;
             set;
@@ -334,7 +335,7 @@ namespace Bridge.Contract
 
         string ToJavaScript(object value);
 
-        System.Collections.Generic.IDictionary<string, Mono.Cecil.TypeDefinition> TypeDefinitions
+        IDictionary<string, TypeDefinition> TypeDefinitions
         {
             get;
         }
@@ -345,13 +346,13 @@ namespace Bridge.Contract
             set;
         }
 
-        System.Collections.Generic.Dictionary<string, ITypeInfo> TypeInfoDefinitions
+        Dictionary<string, ITypeInfo> TypeInfoDefinitions
         {
             get;
             set;
         }
 
-        System.Collections.Generic.List<ITypeInfo> Types
+        List<ITypeInfo> Types
         {
             get;
             set;
@@ -362,15 +363,15 @@ namespace Bridge.Contract
             get;
         }
 
-        System.Collections.Generic.Stack<IWriter> Writers
+        Stack<IWriter> Writers
         {
             get;
             set;
         }
 
-        IVisitorException CreateException(AstNode node);
+        IVisitorException CreateException(SyntaxNode node);
 
-        IVisitorException CreateException(AstNode node, string message);
+        IVisitorException CreateException(SyntaxNode node, string message);
 
         IPlugins Plugins
         {
@@ -383,9 +384,9 @@ namespace Bridge.Contract
             get;
         }
 
-        string GetFieldName(FieldDeclaration field);
+        string GetFieldName(FieldDeclarationSyntax field);
 
-        string GetEventName(EventDeclaration evt);
+        string GetEventName(EventFieldDeclarationSyntax evt);
 
         Dictionary<string, bool> TempVariables
         {
@@ -405,7 +406,7 @@ namespace Bridge.Contract
             set;
         }
 
-        Tuple<bool, string> IsGlobalTarget(IMember member);
+        Tuple<bool, string> IsGlobalTarget(ISymbol member);
 
         BridgeTypes BridgeTypes
         {
@@ -427,13 +428,13 @@ namespace Bridge.Contract
             set;
         }
 
-        IType ReturnType
+        ITypeSymbol ReturnType
         {
             get;
             set;
         }
 
-        string GetEntityNameFromAttr(IEntity member, bool setter = false);
+        string GetEntityNameFromAttr(ISymbol member, bool setter = false);
 
         bool ReplaceJump
         {
@@ -452,7 +453,7 @@ namespace Bridge.Contract
             get; set;
         }
 
-        Dictionary<IType, Dictionary<string, string>> NamedBoxedFunctions
+        Dictionary<ITypeSymbol, Dictionary<string, string>> NamedBoxedFunctions
         {
             get; set;
         }
@@ -474,7 +475,7 @@ namespace Bridge.Contract
             set;
         }
 
-        Dictionary<AnonymousType, IAnonymousTypeConfig> AnonymousTypes
+        Dictionary<INamedTypeSymbol, IAnonymousTypeConfig> AnonymousTypes
         {
             get; set;
         }
@@ -495,7 +496,7 @@ namespace Bridge.Contract
             get; set;
         }
 
-        IType[] ReflectableTypes
+        ITypeSymbol[] ReflectableTypes
         {
             get; set;
         }
@@ -508,32 +509,37 @@ namespace Bridge.Contract
         bool DisableDependencyTracking { get; set; }
 
         void WriteIndented(string s, int? position = null);
-        string GetReflectionName(IType type);
+
+        string GetReflectionName(ITypeSymbol type);
+
         bool ForbidLifting { get; set; }
 
-        Dictionary<IAssembly, NameRule[]> AssemblyNameRuleCache
+        Dictionary<IAssemblySymbol, NameRule[]> AssemblyNameRuleCache
         {
             get;
         }
 
-        Dictionary<ITypeDefinition, NameRule[]> ClassNameRuleCache
+        Dictionary<INamedTypeSymbol, NameRule[]> ClassNameRuleCache
         {
             get;
         }
 
-        Dictionary<IAssembly, CompilerRule[]> AssemblyCompilerRuleCache
+        Dictionary<IAssemblySymbol, CompilerRule[]> AssemblyCompilerRuleCache
         {
             get;
         }
 
-        Dictionary<ITypeDefinition, CompilerRule[]> ClassCompilerRuleCache
+        Dictionary<INamedTypeSymbol, CompilerRule[]> ClassCompilerRuleCache
         {
             get;
         }
 
         bool InConstructor { get; set; }
+
         CompilerRule Rules { get; set; }
+
         bool HasModules { get; set; }
+
         string TemplateModifier { get; set; }
 
         int WrapRestCounter { get; set; }
