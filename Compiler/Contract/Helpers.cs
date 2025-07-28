@@ -1,8 +1,11 @@
 using Bridge.Contract.Constants;
 using ICSharpCode.NRefactory.CSharp;
+using ICSharpCode.NRefactory.CSharp.Resolver;
 using ICSharpCode.NRefactory.Semantics;
 using ICSharpCode.NRefactory.TypeSystem;
 using ICSharpCode.NRefactory.TypeSystem.Implementation;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Mono.Cecil;
 using System;
 using System.Collections.Generic;
@@ -11,18 +14,36 @@ using System.Globalization;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
-using ICSharpCode.NRefactory.CSharp.Resolver;
 using ArrayType = ICSharpCode.NRefactory.TypeSystem.ArrayType;
 
 namespace Bridge.Contract
 {
     public static partial class Helpers
     {
-        public static void AcceptChildren(this AstNode node, IAstVisitor visitor)
+        // Roslyn version - accepts any ISyntaxVisitor
+        public static void AcceptChildren(this SyntaxNode node, CSharpSyntaxVisitor visitor)
         {
-            foreach (AstNode child in node.Children)
+            foreach (SyntaxNode child in node.ChildNodes())
             {
-                child.AcceptVisitor(visitor);
+                visitor.Visit(child);
+            }
+        }
+
+        // Roslyn version - accepts CSharpSyntaxVisitor<T> for visitors that return values
+        public static void AcceptChildren<T>(this SyntaxNode node, CSharpSyntaxVisitor<T> visitor)
+        {
+            foreach (SyntaxNode child in node.ChildNodes())
+            {
+                visitor.Visit(child);
+            }
+        }
+
+        // Roslyn version - using CSharpSyntaxWalker for simple traversal scenarios
+        public static void AcceptChildren(this SyntaxNode node, CSharpSyntaxWalker walker)
+        {
+            foreach (SyntaxNode child in node.ChildNodes())
+            {
+                walker.Visit(child);
             }
         }
 
@@ -79,8 +100,9 @@ namespace Bridge.Contract
 
         public static bool IsTypeArgInSubclass(TypeDefinition thisTypeDefinition, TypeDefinition typeArgDefinition, IEmitter emitter, bool deep = true)
         {
-            foreach (TypeReference interfaceReference in thisTypeDefinition.Interfaces)
+            foreach (InterfaceImplementation interfaceImplementation in thisTypeDefinition.Interfaces)
             {
+                var interfaceReference = interfaceImplementation.InterfaceType;
                 var gBaseType = interfaceReference as GenericInstanceType;
                 if (gBaseType != null && Helpers.HasGenericArgument(gBaseType, typeArgDefinition, emitter, deep))
                 {
@@ -204,33 +226,38 @@ namespace Bridge.Contract
             return null;
         }
 
-        public static bool IsIgnoreGeneric(ITypeDefinition type)
-        {
-            return type.Attributes.Any(a => a.AttributeType.FullName == "Bridge.IgnoreGenericAttribute") || type.DeclaringTypeDefinition != null && Helpers.IsIgnoreGeneric(type.DeclaringTypeDefinition);
-        }
-
         public static bool IsIgnoreGeneric(TypeDefinition type)
         {
             return type.CustomAttributes.Any(a => a.AttributeType.FullName == "Bridge.IgnoreGenericAttribute") || type.DeclaringType != null && Helpers.IsIgnoreGeneric(type.DeclaringType);
         }
 
-        public static bool IsIgnoreGeneric(IType type, IEmitter emitter, bool allowInTypeScript = false)
+        public static bool IsIgnoreGeneric(ITypeSymbol type, bool allowInTypeScript = false)
         {
-            var attr = type.GetDefinition().Attributes.FirstOrDefault(a => a.AttributeType.FullName == "Bridge.IgnoreGenericAttribute");
-
-            if (attr != null)
+            if (type is INamedTypeSymbol namedType)
             {
-                var member = allowInTypeScript ? attr.NamedArguments.FirstOrDefault(arg => arg.Key.Name == "AllowInTypeScript").Value : null;
+                var attrs = namedType.GetAttributes();
+                var attr = attrs.FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == "Bridge.IgnoreGenericAttribute");
 
-                if (member != null)
+                if (attr != null)
                 {
-                    return !(bool)member.ConstantValue;
+                    if (allowInTypeScript)
+                    {
+                        var allowInTsArg = attr.NamedArguments.FirstOrDefault(arg => arg.Key == "AllowInTypeScript");
+                        if (allowInTsArg.Key != null && allowInTsArg.Value.Value is bool allowValue)
+                        {
+                            return !allowValue;
+                        }
+                    }
+
+                    return true;
                 }
 
-                return true;
+                return namedType.ContainingType != null && Helpers.IsIgnoreGeneric(namedType.ContainingType, allowInTypeScript);
             }
 
-            return type.DeclaringType != null && Helpers.IsIgnoreGeneric(type.DeclaringType, emitter, allowInTypeScript);
+            // For other type symbols that aren't named types, check if they have an equivalent check
+            // Type parameters don't have attributes in the same way, so we default to false
+            return false;
         }
 
         public static bool IsIgnoreGeneric(IEntity member, IEmitter emitter)
@@ -636,12 +663,14 @@ namespace Bridge.Contract
             return (isSetter ? JS.Funcs.Property.SET : JS.Funcs.Property.GET) + name;
         }
 
-        public static string GetPropertyRef(PropertyDeclaration property, IEmitter emitter, bool isSetter = false, bool noOverload = false, bool ignoreInterface = false, bool withoutTypeParams = false, bool skipPrefix = true)
+        // Roslyn version for PropertyDeclarationSyntax
+        public static string GetPropertyRef(Microsoft.CodeAnalysis.CSharp.Syntax.PropertyDeclarationSyntax property, IEmitter emitter, bool isSetter = false, bool noOverload = false, bool ignoreInterface = false, bool withoutTypeParams = false, bool skipPrefix = true)
         {
-            ResolveResult resolveResult = emitter.Resolver.ResolveNode(property, emitter) as MemberResolveResult;
-            if (resolveResult != null && ((MemberResolveResult)resolveResult).Member != null)
+            // Use semantic model to get symbol information
+            var symbolInfo = emitter.Resolver.SemanticModel.GetDeclaredSymbol(property);
+            if (symbolInfo is IPropertySymbol propertySymbol)
             {
-                return Helpers.GetPropertyRef(((MemberResolveResult)resolveResult).Member, emitter, isSetter, noOverload, ignoreInterface, withoutTypeParams, skipPrefix);
+                return Helpers.GetPropertyRef(propertySymbol, emitter, isSetter, noOverload, ignoreInterface, withoutTypeParams, skipPrefix);
             }
 
             string name;
@@ -653,15 +682,17 @@ namespace Bridge.Contract
             }
 
             name = emitter.GetEntityName(property);
-            return Helpers.GetSetOrGet(isSetter, name);
+            return skipPrefix ? name : Helpers.GetSetOrGet(isSetter, name);
         }
 
-        public static string GetPropertyRef(IndexerDeclaration property, IEmitter emitter, bool isSetter = false, bool noOverload = false, bool ignoreInterface = false)
+        // Roslyn version for IndexerDeclarationSyntax
+        public static string GetPropertyRef(Microsoft.CodeAnalysis.CSharp.Syntax.IndexerDeclarationSyntax property, IEmitter emitter, bool isSetter = false, bool noOverload = false, bool ignoreInterface = false)
         {
-            ResolveResult resolveResult = emitter.Resolver.ResolveNode(property, emitter) as MemberResolveResult;
-            if (resolveResult != null && ((MemberResolveResult)resolveResult).Member != null)
+            // Use semantic model to get symbol information
+            var symbolInfo = emitter.Resolver.SemanticModel.GetDeclaredSymbol(property);
+            if (symbolInfo is IPropertySymbol propertySymbol)
             {
-                return Helpers.GetIndexerRef(((MemberResolveResult)resolveResult).Member, emitter, isSetter, noOverload, ignoreInterface);
+                return Helpers.GetIndexerRef(propertySymbol, emitter, isSetter, noOverload, ignoreInterface);
             }
 
             if (!noOverload)
@@ -674,26 +705,8 @@ namespace Bridge.Contract
             return Helpers.GetSetOrGet(isSetter, name);
         }
 
-        public static string GetIndexerRef(IMember property, IEmitter emitter, bool isSetter = false, bool noOverload = false, bool ignoreInterface = false)
-        {
-            var attrName = emitter.GetEntityNameFromAttr(property, isSetter);
-
-            if (!String.IsNullOrEmpty(attrName))
-            {
-                return Helpers.AddInterfacePrefix(property, emitter, ignoreInterface, attrName, isSetter);
-            }
-
-            if (!noOverload)
-            {
-                var overloads = OverloadsCollection.Create(emitter, property, isSetter);
-                return overloads.GetOverloadName(ignoreInterface, Helpers.GetSetOrGet(isSetter));
-            }
-
-            var name = emitter.GetEntityName(property);
-            return Helpers.GetSetOrGet(isSetter, name);
-        }
-
-        public static string GetPropertyRef(IMember property, IEmitter emitter, bool isSetter = false, bool noOverload = false, bool ignoreInterface = false, bool withoutTypeParams = false, bool skipPrefix = true)
+        // Roslyn version for IPropertySymbol
+        public static string GetPropertyRef(IPropertySymbol property, IEmitter emitter, bool isSetter = false, bool noOverload = false, bool ignoreInterface = false, bool withoutTypeParams = false, bool skipPrefix = true)
         {
             var attrName = emitter.GetEntityNameFromAttr(property, isSetter);
 
@@ -704,7 +717,7 @@ namespace Bridge.Contract
 
             string name = null;
 
-            if (property.SymbolKind == SymbolKind.Indexer)
+            if (property.IsIndexer)
             {
                 skipPrefix = false;
             }
@@ -719,14 +732,36 @@ namespace Bridge.Contract
             return skipPrefix ? name : Helpers.GetSetOrGet(isSetter, name);
         }
 
-        private static string AddInterfacePrefix(IMember property, IEmitter emitter, bool ignoreInterface, string attrName, bool isSetter)
+        // Roslyn version for IPropertySymbol (IndexerRef equivalent)
+        public static string GetIndexerRef(IPropertySymbol property, IEmitter emitter, bool isSetter = false, bool noOverload = false, bool ignoreInterface = false)
         {
-            IMember interfaceMember = null;
-            if (property.IsExplicitInterfaceImplementation)
+            var attrName = emitter.GetEntityNameFromAttr(property, isSetter);
+
+            if (!String.IsNullOrEmpty(attrName))
             {
-                interfaceMember = property.ImplementedInterfaceMembers.First();
+                return Helpers.AddInterfacePrefix(property, emitter, ignoreInterface, attrName, isSetter);
             }
-            else if (property.DeclaringTypeDefinition != null && property.DeclaringTypeDefinition.Kind == TypeKind.Interface)
+
+            if (!noOverload)
+            {
+                var overloads = OverloadsCollection.Create(emitter, property, isSetter);
+                return overloads.GetOverloadName(ignoreInterface, Helpers.GetSetOrGet(isSetter));
+            }
+
+            var name = emitter.GetEntityName(property);
+            return Helpers.GetSetOrGet(isSetter, name);
+        }
+
+        private static string AddInterfacePrefix(IPropertySymbol property, IEmitter emitter, bool ignoreInterface, string attrName, bool isSetter)
+        {
+            IPropertySymbol interfaceMember = null;
+
+            // Check for explicit interface implementation
+            if (property.ExplicitInterfaceImplementations.Any())
+            {
+                interfaceMember = property.ExplicitInterfaceImplementations.First();
+            }
+            else if (property.ContainingType != null && property.ContainingType.TypeKind == TypeKind.Interface)
             {
                 interfaceMember = property;
             }

@@ -1,20 +1,21 @@
 using System;
 using Bridge.Contract.Constants;
-using ICSharpCode.NRefactory.CSharp;
-using ICSharpCode.NRefactory.Semantics;
-using ICSharpCode.NRefactory.TypeSystem;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
-using ITypeDefinition = ICSharpCode.NRefactory.TypeSystem.ITypeDefinition;
-using Modifiers = ICSharpCode.NRefactory.CSharp.Modifiers;
 
 namespace Bridge.Contract
 {
+    /// <summary>
+    /// The OverloadsCollection class manages and resolves overloaded members (methods, properties, events, fields, constructors, operators, indexers) within a type hierarchy when translating C# code to JavaScript. Since JavaScript doesn't have native method overloading like C#, Bridge needs to generate unique names for overloaded members.
+    /// </summary>
     public class OverloadsCollection
     {
-        public static OverloadsCollection Create(IEmitter emitter, FieldDeclaration fieldDeclaration)
+        public static OverloadsCollection Create(IEmitter emitter, FieldDeclarationSyntax fieldDeclaration)
         {
             OverloadsCollection collection;
 
@@ -26,7 +27,7 @@ namespace Bridge.Contract
             return new OverloadsCollection(emitter, fieldDeclaration);
         }
 
-        public static OverloadsCollection Create(IEmitter emitter, EventDeclaration eventDeclaration)
+        public static OverloadsCollection Create(IEmitter emitter, EventFieldDeclarationSyntax eventDeclaration)
         {
             OverloadsCollection collection;
 
@@ -38,7 +39,7 @@ namespace Bridge.Contract
             return new OverloadsCollection(emitter, eventDeclaration);
         }
 
-        public static OverloadsCollection Create(IEmitter emitter, CustomEventDeclaration eventDeclaration, bool remove)
+        public static OverloadsCollection Create(IEmitter emitter, EventDeclarationSyntax eventDeclaration, bool remove)
         {
             OverloadsCollection collection;
 
@@ -50,7 +51,7 @@ namespace Bridge.Contract
             return new OverloadsCollection(emitter, eventDeclaration, remove);
         }
 
-        public static OverloadsCollection Create(IEmitter emitter, MethodDeclaration methodDeclaration)
+        public static OverloadsCollection Create(IEmitter emitter, MethodDeclarationSyntax methodDeclaration)
         {
             OverloadsCollection collection;
 
@@ -62,7 +63,7 @@ namespace Bridge.Contract
             return new OverloadsCollection(emitter, methodDeclaration);
         }
 
-        public static OverloadsCollection Create(IEmitter emitter, ConstructorDeclaration constructorDeclaration)
+        public static OverloadsCollection Create(IEmitter emitter, ConstructorDeclarationSyntax constructorDeclaration)
         {
             OverloadsCollection collection;
 
@@ -74,7 +75,7 @@ namespace Bridge.Contract
             return new OverloadsCollection(emitter, constructorDeclaration);
         }
 
-        public static OverloadsCollection Create(IEmitter emitter, PropertyDeclaration propDeclaration, bool isSetter = false, bool isField = false)
+        public static OverloadsCollection Create(IEmitter emitter, PropertyDeclarationSyntax propDeclaration, bool isSetter = false, bool isField = false)
         {
             OverloadsCollection collection;
 
@@ -86,7 +87,7 @@ namespace Bridge.Contract
             return new OverloadsCollection(emitter, propDeclaration, isSetter, isField);
         }
 
-        public static OverloadsCollection Create(IEmitter emitter, IndexerDeclaration indexerDeclaration, bool isSetter = false)
+        public static OverloadsCollection Create(IEmitter emitter, IndexerDeclarationSyntax indexerDeclaration, bool isSetter = false)
         {
             OverloadsCollection collection;
 
@@ -98,7 +99,7 @@ namespace Bridge.Contract
             return new OverloadsCollection(emitter, indexerDeclaration, isSetter);
         }
 
-        public static OverloadsCollection Create(IEmitter emitter, OperatorDeclaration operatorDeclaration)
+        public static OverloadsCollection Create(IEmitter emitter, OperatorDeclarationSyntax operatorDeclaration)
         {
             OverloadsCollection collection;
 
@@ -110,7 +111,7 @@ namespace Bridge.Contract
             return new OverloadsCollection(emitter, operatorDeclaration);
         }
 
-        public static OverloadsCollection Create(IEmitter emitter, IMember member, bool isSetter = false, bool includeInline = false)
+        public static OverloadsCollection Create(IEmitter emitter, ISymbol member, bool isSetter = false, bool includeInline = false)
         {
             OverloadsCollection collection;
 
@@ -128,13 +129,13 @@ namespace Bridge.Contract
             private set;
         }
 
-        public IType Type
+        public ITypeSymbol Type
         {
             get;
             private set;
         }
 
-        public ITypeDefinition TypeDefinition
+        public INamedTypeSymbol TypeDefinition
         {
             get;
             private set;
@@ -200,170 +201,169 @@ namespace Bridge.Contract
             private set;
         }
 
-        public IMember Member
+        public ISymbol Member
         {
             get;
             private set;
         }
 
-        public IMember OriginalMember
+        public ISymbol OriginalMember
         {
             get; set;
         }
 
-        private OverloadsCollection(IEmitter emitter, FieldDeclaration fieldDeclaration)
+        private OverloadsCollection(IEmitter emitter, FieldDeclarationSyntax fieldDeclaration)
         {
             this.Emitter = emitter;
             this.Name = emitter.GetFieldName(fieldDeclaration);
             this.JsName = this.Emitter.GetEntityName(fieldDeclaration);
-            this.Inherit = !fieldDeclaration.HasModifier(Modifiers.Static);
-            this.Static = fieldDeclaration.HasModifier(Modifiers.Static);
+            this.Inherit = !fieldDeclaration.Modifiers.Any(SyntaxKind.StaticKeyword);
+            this.Static = fieldDeclaration.Modifiers.Any(SyntaxKind.StaticKeyword);
             this.Member = this.FindMember(fieldDeclaration);
-            this.TypeDefinition = this.Member.DeclaringTypeDefinition;
-            this.Type = this.Member.DeclaringType;
+            this.TypeDefinition = this.Member.ContainingType;
+            this.Type = this.Member.ContainingType;
             this.InitMembers();
             this.Emitter.Cache.AddNode(fieldDeclaration, false, this);
         }
 
-        private OverloadsCollection(IEmitter emitter, EventDeclaration eventDeclaration)
+        private OverloadsCollection(IEmitter emitter, EventFieldDeclarationSyntax eventDeclaration)
         {
             this.Emitter = emitter;
             this.Name = emitter.GetEventName(eventDeclaration);
             this.JsName = this.Emitter.GetEntityName(eventDeclaration);
-            this.Inherit = !eventDeclaration.HasModifier(Modifiers.Static);
-            this.Static = eventDeclaration.HasModifier(Modifiers.Static);
+            this.Inherit = !eventDeclaration.Modifiers.Any(SyntaxKind.StaticKeyword);
+            this.Static = eventDeclaration.Modifiers.Any(SyntaxKind.StaticKeyword);
             this.Member = this.FindMember(eventDeclaration);
-            this.TypeDefinition = this.Member.DeclaringTypeDefinition;
-            this.Type = this.Member.DeclaringType;
+            this.TypeDefinition = this.Member.ContainingType;
+            this.Type = this.Member.ContainingType;
             this.InitMembers();
             this.Emitter.Cache.AddNode(eventDeclaration, false, this);
         }
 
-        private OverloadsCollection(IEmitter emitter, CustomEventDeclaration eventDeclaration, bool remove)
+        private OverloadsCollection(IEmitter emitter, EventDeclarationSyntax eventDeclaration, bool remove)
         {
             this.Emitter = emitter;
-            this.Name = eventDeclaration.Name;
+            this.Name = eventDeclaration.Identifier.ValueText;
             this.JsName = Helpers.GetEventRef(eventDeclaration, emitter, remove, true);
             this.AltJsName = Helpers.GetEventRef(eventDeclaration, emitter, !remove, true);
             this.FieldJsName = emitter.GetEntityName(eventDeclaration);
-            this.Inherit = !eventDeclaration.HasModifier(Modifiers.Static);
+            this.Inherit = !eventDeclaration.Modifiers.Any(SyntaxKind.StaticKeyword);
             this.IsSetter = remove;
-            this.Static = eventDeclaration.HasModifier(Modifiers.Static);
+            this.Static = eventDeclaration.Modifiers.Any(SyntaxKind.StaticKeyword);
             this.Member = this.FindMember(eventDeclaration);
-            this.FieldJsName = Helpers.GetEventRef(this.Member, emitter, true, true, true, false, true); ;
-            this.TypeDefinition = this.Member.DeclaringTypeDefinition;
-            this.Type = this.Member.DeclaringType;
+            this.FieldJsName = Helpers.GetEventRef(this.Member, emitter, true, true, true, false, true);
+            this.TypeDefinition = this.Member.ContainingType;
+            this.Type = this.Member.ContainingType;
             this.InitMembers();
             this.Emitter.Cache.AddNode(eventDeclaration, remove, this);
         }
 
-        private OverloadsCollection(IEmitter emitter, MethodDeclaration methodDeclaration)
+        private OverloadsCollection(IEmitter emitter, MethodDeclarationSyntax methodDeclaration)
         {
             this.Emitter = emitter;
-            this.Name = methodDeclaration.Name;
+            this.Name = methodDeclaration.Identifier.ValueText;
             this.JsName = this.Emitter.GetEntityName(methodDeclaration);
-            this.Inherit = !methodDeclaration.HasModifier(Modifiers.Static);
-            this.Static = methodDeclaration.HasModifier(Modifiers.Static);
+            this.Inherit = !methodDeclaration.Modifiers.Any(SyntaxKind.StaticKeyword);
+            this.Static = methodDeclaration.Modifiers.Any(SyntaxKind.StaticKeyword);
             this.Member = this.FindMember(methodDeclaration);
-            this.TypeDefinition = this.Member.DeclaringTypeDefinition;
-            this.Type = this.Member.DeclaringType;
+            this.TypeDefinition = this.Member.ContainingType;
+            this.Type = this.Member.ContainingType;
             this.InitMembers();
             this.Emitter.Cache.AddNode(methodDeclaration, false, this);
         }
 
-        private OverloadsCollection(IEmitter emitter, ConstructorDeclaration constructorDeclaration)
+        private OverloadsCollection(IEmitter emitter, ConstructorDeclarationSyntax constructorDeclaration)
         {
             this.Emitter = emitter;
-            this.Name = constructorDeclaration.Name;
+            this.Name = constructorDeclaration.Identifier.ValueText;
             this.JsName = this.Emitter.GetEntityName(constructorDeclaration);
             this.Inherit = false;
             this.Constructor = true;
-            this.Static = constructorDeclaration.HasModifier(Modifiers.Static);
+            this.Static = constructorDeclaration.Modifiers.Any(SyntaxKind.StaticKeyword);
             this.Member = this.FindMember(constructorDeclaration);
-            this.TypeDefinition = this.Member.DeclaringTypeDefinition;
-            this.Type = this.Member.DeclaringType;
+            this.TypeDefinition = this.Member.ContainingType;
+            this.Type = this.Member.ContainingType;
             this.InitMembers();
             this.Emitter.Cache.AddNode(constructorDeclaration, false, this);
         }
 
-        private OverloadsCollection(IEmitter emitter, PropertyDeclaration propDeclaration, bool isSetter, bool isField)
+        private OverloadsCollection(IEmitter emitter, PropertyDeclarationSyntax propDeclaration, bool isSetter, bool isField)
         {
             this.Emitter = emitter;
             this.IsField = isField;
-            this.Name = propDeclaration.Name;
+            this.Name = propDeclaration.Identifier.ValueText;
             this.JsName = Helpers.GetPropertyRef(propDeclaration, emitter, isSetter, true, true);
             this.AltJsName = Helpers.GetPropertyRef(propDeclaration, emitter, !isSetter, true, true);
-            this.FieldJsName = propDeclaration.Getter != null && propDeclaration.Getter.Body.IsNull ? emitter.GetEntityName(propDeclaration) : null;
-            this.Inherit = !propDeclaration.HasModifier(Modifiers.Static);
-            this.Static = propDeclaration.HasModifier(Modifiers.Static);
+            this.FieldJsName = propDeclaration.AccessorList?.Accessors.FirstOrDefault(a => a.IsKind(SyntaxKind.GetAccessorDeclaration))?.Body == null ? emitter.GetEntityName(propDeclaration) : null;
+            this.Inherit = !propDeclaration.Modifiers.Any(SyntaxKind.StaticKeyword);
+            this.Static = propDeclaration.Modifiers.Any(SyntaxKind.StaticKeyword);
             this.IsSetter = isSetter;
             this.Member = this.FindMember(propDeclaration);
-            var p = (IProperty)this.Member;
+            var p = (IPropertySymbol)this.Member;
             this.FieldJsName = this.Emitter.GetEntityName(p);
-            this.TypeDefinition = this.Member.DeclaringTypeDefinition;
-            this.Type = this.Member.DeclaringType;
+            this.TypeDefinition = this.Member.ContainingType;
+            this.Type = this.Member.ContainingType;
             this.InitMembers();
             this.Emitter.Cache.AddNode(propDeclaration, isSetter, this);
         }
 
-        private OverloadsCollection(IEmitter emitter, IndexerDeclaration indexerDeclaration, bool isSetter)
+        private OverloadsCollection(IEmitter emitter, IndexerDeclarationSyntax indexerDeclaration, bool isSetter)
         {
             this.Emitter = emitter;
-            this.Name = indexerDeclaration.Name;
+            this.Name = "this";
             this.JsName = Helpers.GetPropertyRef(indexerDeclaration, emitter, isSetter, true, true);
             this.AltJsName = Helpers.GetPropertyRef(indexerDeclaration, emitter, !isSetter, true, true);
             this.Inherit = true;
             this.Static = false;
             this.IsSetter = isSetter;
             this.Member = this.FindMember(indexerDeclaration);
-            this.TypeDefinition = this.Member.DeclaringTypeDefinition;
-            this.Type = this.Member.DeclaringType;
+            this.TypeDefinition = this.Member.ContainingType;
+            this.Type = this.Member.ContainingType;
             this.InitMembers();
             this.Emitter.Cache.AddNode(indexerDeclaration, isSetter, this);
         }
 
-        private OverloadsCollection(IEmitter emitter, OperatorDeclaration operatorDeclaration)
+        private OverloadsCollection(IEmitter emitter, OperatorDeclarationSyntax operatorDeclaration)
         {
             this.Emitter = emitter;
-            this.Name = operatorDeclaration.Name;
+            this.Name = operatorDeclaration.OperatorToken.ValueText;
             this.JsName = this.Emitter.GetEntityName(operatorDeclaration);
-            this.Inherit = !operatorDeclaration.HasModifier(Modifiers.Static);
-            this.Static = operatorDeclaration.HasModifier(Modifiers.Static);
+            this.Inherit = !operatorDeclaration.Modifiers.Any(SyntaxKind.StaticKeyword);
+            this.Static = operatorDeclaration.Modifiers.Any(SyntaxKind.StaticKeyword);
             this.Member = this.FindMember(operatorDeclaration);
-            this.TypeDefinition = this.Member.DeclaringTypeDefinition;
-            this.Type = this.Member.DeclaringType;
+            this.TypeDefinition = this.Member.ContainingType;
+            this.Type = this.Member.ContainingType;
             this.InitMembers();
             this.Emitter.Cache.AddNode(operatorDeclaration, false, this);
         }
 
-        private OverloadsCollection(IEmitter emitter, IMember member, bool isSetter = false, bool includeInline = false, bool isField = false)
+        private OverloadsCollection(IEmitter emitter, ISymbol member, bool isSetter = false, bool includeInline = false, bool isField = false)
         {
-            if (member is IMethod)
+            if (member is IMethodSymbol)
             {
-                var method = (IMethod)member;
-                this.Inherit = !method.IsConstructor && !method.IsStatic;
+                var method = (IMethodSymbol)member;
+                this.Inherit = method.MethodKind != MethodKind.Constructor && !method.IsStatic;
                 this.Static = method.IsStatic;
-                this.Constructor = method.IsConstructor;
+                this.Constructor = method.MethodKind == MethodKind.Constructor;
             }
-            else if (member is IEntity)
+            else
             {
-                var entity = (IEntity)member;
-                this.Inherit = !entity.IsStatic;
-                this.Static = entity.IsStatic;
+                this.Inherit = !member.IsStatic;
+                this.Static = member.IsStatic;
             }
 
             this.Emitter = emitter;
             this.Name = member.Name;
             this.IsField = isField;
 
-            if (member is IProperty)
+            if (member is IPropertySymbol)
             {
-                this.JsName = Helpers.GetPropertyRef(member, emitter, isSetter, true, true);
-                this.AltJsName = Helpers.GetPropertyRef(member, emitter, !isSetter, true, true);
-                var p = (IProperty) member;
+                this.JsName = Helpers.GetPropertyRef((IPropertySymbol)member, emitter, isSetter, true, true);
+                this.AltJsName = Helpers.GetPropertyRef((IPropertySymbol)member, emitter, !isSetter, true, true);
+                var p = (IPropertySymbol) member;
                 this.FieldJsName = this.Emitter.GetEntityName(p);
             }
-            else if (member is IEvent)
+            else if (member is IEventSymbol)
             {
                 this.JsName = Helpers.GetEventRef(member, emitter, isSetter, true, true);
                 this.AltJsName = Helpers.GetEventRef(member, emitter, !isSetter, true, true);
@@ -376,8 +376,8 @@ namespace Bridge.Contract
 
             this.IncludeInline = includeInline;
             this.Member = member;
-            this.TypeDefinition = this.Member.DeclaringTypeDefinition;
-            this.Type = this.Member.DeclaringType;
+            this.TypeDefinition = this.Member.ContainingType;
+            this.Type = this.Member.ContainingType;
             this.IsSetter = isSetter;
             this.InitMembers();
             this.Emitter.Cache.AddMember(member, isSetter, includeInline, this);
@@ -389,25 +389,25 @@ namespace Bridge.Contract
             set;
         }
 
-        public List<IMethod> Methods
+        public List<IMethodSymbol> Methods
         {
             get;
             private set;
         }
 
-        public List<IField> Fields
+        public List<IFieldSymbol> Fields
         {
             get;
             private set;
         }
 
-        public List<IProperty> Properties
+        public List<IPropertySymbol> Properties
         {
             get;
             private set;
         }
 
-        public List<IEvent> Events
+        public List<IEventSymbol> Events
         {
             get;
             private set;
@@ -421,7 +421,7 @@ namespace Bridge.Contract
             }
         }
 
-        protected virtual int GetIndex(IMember member)
+        protected virtual int GetIndex(ISymbol member)
         {
             var originalMember = member;
 
@@ -435,12 +435,12 @@ namespace Bridge.Contract
                 member = originalMember;
             }
 
-            return this.Members.IndexOf(member.MemberDefinition);
+            return this.Members.IndexOf(member.OriginalDefinition);
         }
 
-        private List<IMember> members;
+        private List<ISymbol> members;
 
-        public List<IMember> Members
+        public List<ISymbol> Members
         {
             get
             {
@@ -458,7 +458,7 @@ namespace Bridge.Contract
                 this.Methods = this.GetMethodOverloads();
                 this.Fields = this.GetFieldOverloads();
 
-                this.members = new List<IMember>();
+                this.members = new List<ISymbol>();
                 this.members.AddRange(this.Methods);
                 this.members.AddRange(this.Properties);
                 this.members.AddRange(this.Fields);
@@ -472,13 +472,13 @@ namespace Bridge.Contract
         {
             this.Members.Sort((m1, m2) =>
             {
-                if (m1.DeclaringType != m2.DeclaringType)
+                if (!SymbolEqualityComparer.Default.Equals(m1.ContainingType, m2.ContainingType))
                 {
-                    return m1.DeclaringTypeDefinition.IsDerivedFrom(m2.DeclaringTypeDefinition) ? 1 : -1;
+                    return m1.ContainingType.IsSubclassOf(m2.ContainingType) ? 1 : -1;
                 }
 
-                var iCount1 = m1.ImplementedInterfaceMembers.Count;
-                var iCount2 = m2.ImplementedInterfaceMembers.Count;
+                var iCount1 = m1.ExplicitInterfaceImplementations.Length;
+                var iCount2 = m2.ExplicitInterfaceImplementations.Length;
                 if (iCount1 > 0 && iCount2 == 0)
                 {
                     return -1;
@@ -491,18 +491,18 @@ namespace Bridge.Contract
 
                 if (iCount1 > 0 && iCount2 > 0)
                 {
-                    foreach (var im1 in m1.ImplementedInterfaceMembers)
+                    foreach (var im1 in m1.ExplicitInterfaceImplementations)
                     {
-                        foreach (var im2 in m2.ImplementedInterfaceMembers)
+                        foreach (var im2 in m2.ExplicitInterfaceImplementations)
                         {
-                            if (im1.DeclaringType != im2.DeclaringType)
+                            if (!SymbolEqualityComparer.Default.Equals(im1.ContainingType, im2.ContainingType))
                             {
-                                if (im1.DeclaringTypeDefinition.IsDerivedFrom(im2.DeclaringTypeDefinition))
+                                if (im1.ContainingType.IsSubclassOf(im2.ContainingType))
                                 {
                                     return 1;
                                 }
 
-                                if (im2.DeclaringTypeDefinition.IsDerivedFrom(im1.DeclaringTypeDefinition))
+                                if (im2.ContainingType.IsSubclassOf(im1.ContainingType))
                                 {
                                     return -1;
                                 }
@@ -511,36 +511,36 @@ namespace Bridge.Contract
                     }
                 }
 
-                var method1 = m1 as IMethod;
-                var method2 = m2 as IMethod;
+                var method1 = m1 as IMethodSymbol;
+                var method2 = m2 as IMethodSymbol;
 
-                if ((method1 != null && method1.IsConstructor) &&
-                    (method2 == null || !method2.IsConstructor))
+                if ((method1 != null && method1.MethodKind == MethodKind.Constructor) &&
+                    (method2 == null || method2.MethodKind != MethodKind.Constructor))
                 {
                     return -1;
                 }
 
-                if ((method2 != null && method2.IsConstructor) &&
-                    (method1 == null || !method1.IsConstructor))
+                if ((method2 != null && method2.MethodKind == MethodKind.Constructor) &&
+                    (method1 == null || method1.MethodKind != MethodKind.Constructor))
                 {
                     return 1;
                 }
 
-                if ((method1 != null && method1.IsConstructor) &&
-                    (method2 != null && method2.IsConstructor))
+                if ((method1 != null && method1.MethodKind == MethodKind.Constructor) &&
+                    (method2 != null && method2.MethodKind == MethodKind.Constructor))
                 {
                     return string.Compare(this.MemberToString(m1), this.MemberToString(m2));
                 }
 
-                var a1 = this.GetAccessibilityWeight(m1.Accessibility);
-                var a2 = this.GetAccessibilityWeight(m2.Accessibility);
+                var a1 = this.GetAccessibilityWeight(m1.DeclaredAccessibility);
+                var a2 = this.GetAccessibilityWeight(m2.DeclaredAccessibility);
                 if (a1 != a2)
                 {
                     return a1.CompareTo(a2);
                 }
 
-                var v1 = m1 is IField ? 1 : (m1 is IEvent ? 2 : (m1 is IProperty ? 3 : (m1 is IMethod ? 4 : 5)));
-                var v2 = m2 is IField ? 1 : (m2 is IEvent ? 2 : (m2 is IProperty ? 3 : (m2 is IMethod ? 4 : 5)));
+                var v1 = m1 is IFieldSymbol ? 1 : (m1 is IEventSymbol ? 2 : (m1 is IPropertySymbol ? 3 : (m1 is IMethodSymbol ? 4 : 5)));
+                var v2 = m2 is IFieldSymbol ? 1 : (m2 is IEventSymbol ? 2 : (m2 is IPropertySymbol ? 3 : (m2 is IMethodSymbol ? 4 : 5)));
 
                 if (v1 != v2)
                 {
@@ -559,7 +559,7 @@ namespace Bridge.Contract
             int w = 0;
             switch (a)
             {
-                case Accessibility.None:
+                case Accessibility.NotApplicable:
                     w = 4;
                     break;
 
@@ -591,23 +591,23 @@ namespace Bridge.Contract
             return w;
         }
 
-        protected virtual string MemberToString(IMember member)
+        protected virtual string MemberToString(ISymbol member)
         {
-            if (member is IMethod)
+            if (member is IMethodSymbol)
             {
-                return this.MethodToString((IMethod)member);
+                return this.MethodToString((IMethodSymbol)member);
             }
 
             return member.Name;
         }
 
-        protected virtual string MethodToString(IMethod m)
+        protected virtual string MethodToString(IMethodSymbol m)
         {
             StringBuilder sb = new StringBuilder();
 
             sb.Append(m.ReturnType.ToString()).Append(" ");
             sb.Append(m.Name).Append(" ");
-            sb.Append(m.TypeParameters.Count).Append(" ");
+            sb.Append(m.TypeParameters.Length).Append(" ");
 
             foreach (var p in m.Parameters)
             {
@@ -617,7 +617,7 @@ namespace Bridge.Contract
             return sb.ToString();
         }
 
-        public virtual bool IsTemplateOverride(IMember member)
+        public virtual bool IsTemplateOverride(ISymbol member)
         {
             if (member.IsOverride)
             {
@@ -641,13 +641,13 @@ namespace Bridge.Contract
             return false;
         }
 
-        protected virtual List<IMethod> GetMethodOverloads(List<IMethod> list = null, ITypeDefinition typeDef = null)
+        protected virtual List<IMethodSymbol> GetMethodOverloads(List<IMethodSymbol> list = null, INamedTypeSymbol typeDef = null)
         {
             typeDef = typeDef ?? this.TypeDefinition;
 
             bool isTop = list == null;
-            list = list ?? new List<IMethod>();
-            var toStringOverride = (this.JsName == "toString" && this.Member is IMethod && ((IMethod)this.Member).Parameters.Count == 0);
+            list = list ?? new List<IMethodSymbol>();
+            var toStringOverride = (this.JsName == "toString" && this.Member is IMethodSymbol && ((IMethodSymbol)this.Member).Parameters.Length == 0);
             if (this.Member != null && this.Member.IsOverride && (!this.IsTemplateOverride(this.Member) || toStringOverride))
             {
                 if (this.OriginalMember == null)
@@ -656,7 +656,7 @@ namespace Bridge.Contract
                 }
 
                 this.Member = InheritanceHelper.GetBaseMember(this.Member);
-                typeDef = this.Member.DeclaringTypeDefinition;
+                typeDef = this.Member.ContainingType;
             }
 
             if (typeDef != null)
@@ -670,9 +670,9 @@ namespace Bridge.Contract
                     this.IncludeInline = true;
                 }
 
-                var methods = typeDef.Methods.Where(m =>
+                var methods = typeDef.GetMembers().OfType<IMethodSymbol>().Where(m =>
                 {
-                    if (m.IsExplicitInterfaceImplementation)
+                    if (m.ExplicitInterfaceImplementations.Length > 0)
                     {
                         return false;
                     }
@@ -680,7 +680,7 @@ namespace Bridge.Contract
                     if (!this.IncludeInline)
                     {
                         var inline = this.Emitter.GetInline(m);
-                        if (!string.IsNullOrWhiteSpace(inline) && !(m.Name == "ToString" && m.Parameters.Count == 0 && !m.IsOverride))
+                        if (!string.IsNullOrWhiteSpace(inline) && !(m.Name == "ToString" && m.Parameters.Length == 0 && !m.IsOverride))
                         {
                             return false;
                         }
@@ -688,21 +688,21 @@ namespace Bridge.Contract
 
                     var name = this.Emitter.GetEntityName(m);
                     if ((name == this.JsName || name == this.AltJsName || name == this.FieldJsName) && m.IsStatic == this.Static &&
-                        (m.IsConstructor && this.JsName == JS.Funcs.CONSTRUCTOR || m.IsConstructor == this.Constructor))
+                        (m.MethodKind == MethodKind.Constructor && this.JsName == JS.Funcs.CONSTRUCTOR || (m.MethodKind == MethodKind.Constructor) == this.Constructor))
                     {
-                        if (m.IsConstructor != this.Constructor && (m.Parameters.Count > 0 || m.DeclaringTypeDefinition != this.TypeDefinition))
+                        if ((m.MethodKind == MethodKind.Constructor) != this.Constructor && (m.Parameters.Length > 0 || !SymbolEqualityComparer.Default.Equals(m.ContainingType, this.TypeDefinition)))
                         {
                             return false;
                         }
 
-                        if (m.IsOverride && (!this.IsTemplateOverride(m) || m.Name == "ToString" && m.Parameters.Count == 0))
+                        if (m.IsOverride && (!this.IsTemplateOverride(m) || m.Name == "ToString" && m.Parameters.Length == 0))
                         {
                             return false;
                         }
 
                         if (!isExternalType)
                         {
-                            var isExtern = !m.HasBody && !m.IsAbstract || this.Emitter.Validator.IsExternalType(m);
+                            var isExtern = m.IsAbstract || this.Emitter.Validator.IsExternalType(m);
                             if (isExtern)
                             {
                                 return false;
@@ -730,11 +730,11 @@ namespace Bridge.Contract
 
                 if (this.Inherit)
                 {
-                    var baseTypeDefinitions = typeDef.DirectBaseTypes.Where(t => t.Kind == typeDef.Kind || (typeDef.Kind == TypeKind.Struct && t.Kind == TypeKind.Class));
+                    var baseTypes = typeDef.GetBaseTypesAndThis().Where(t => t.TypeKind == typeDef.TypeKind || (typeDef.TypeKind == TypeKind.Struct && t.TypeKind == TypeKind.Class));
 
-                    foreach (var baseTypeDef in baseTypeDefinitions)
+                    foreach (var baseTypeDef in baseTypes.Skip(1)) // Skip self
                     {
-                        list = this.GetMethodOverloads(list, baseTypeDef.GetDefinition());
+                        list = this.GetMethodOverloads(list, baseTypeDef);
                     }
                 }
             }
@@ -743,12 +743,12 @@ namespace Bridge.Contract
             return returnMethods;
         }
 
-        protected virtual List<IProperty> GetPropertyOverloads(List<IProperty> list = null, ITypeDefinition typeDef = null)
+        protected virtual List<IPropertySymbol> GetPropertyOverloads(List<IPropertySymbol> list = null, INamedTypeSymbol typeDef = null)
         {
             typeDef = typeDef ?? this.TypeDefinition;
 
             bool isTop = list == null;
-            list = list ?? new List<IProperty>();
+            list = list ?? new List<IPropertySymbol>();
 
             if (this.Member != null && this.Member.IsOverride && !this.IsTemplateOverride(this.Member))
             {
@@ -758,37 +758,37 @@ namespace Bridge.Contract
                 }
 
                 this.Member = InheritanceHelper.GetBaseMember(this.Member);
-                typeDef = this.Member.DeclaringTypeDefinition;
+                typeDef = this.Member.ContainingType;
             }
 
             if (typeDef != null)
             {
-                bool isMember = this.Member is IMethod;
-                var properties = typeDef.Properties.Where(p =>
+                bool isMember = this.Member is IMethodSymbol;
+                var properties = typeDef.GetMembers().OfType<IPropertySymbol>().Where(p =>
                 {
-                    if (p.IsExplicitInterfaceImplementation)
+                    if (p.ExplicitInterfaceImplementations.Length > 0)
                     {
                         return false;
                     }
 
-                    var canGet = p.CanGet && p.Getter != null;
-                    var canSet = p.CanSet && p.Setter != null;
+                    var canGet = p.GetMethod != null;
+                    var canSet = p.SetMethod != null;
 
                     if (!this.IncludeInline)
                     {
-                        var inline = canGet ? this.Emitter.GetInline(p.Getter) : null;
+                        var inline = canGet ? this.Emitter.GetInline(p.GetMethod) : null;
                         if (!string.IsNullOrWhiteSpace(inline))
                         {
                             return false;
                         }
 
-                        inline = canSet ? this.Emitter.GetInline(p.Setter) : null;
+                        inline = canSet ? this.Emitter.GetInline(p.SetMethod) : null;
                         if (!string.IsNullOrWhiteSpace(inline))
                         {
                             return false;
                         }
 
-                        if (p.IsIndexer && canGet && p.Getter.Attributes.Any(a => a.AttributeType.FullName == "Bridge.ExternalAttribute"))
+                        if (p.IsIndexer && canGet && p.GetMethod.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "Bridge.ExternalAttribute"))
                         {
                             return false;
                         }
@@ -808,8 +808,8 @@ namespace Bridge.Contract
 
                         if (!eq && p.IsIndexer)
                         {
-                            var getterIgnore = canGet && this.Emitter.Validator.IsExternalType(p.Getter);
-                            var setterIgnore = canSet && this.Emitter.Validator.IsExternalType(p.Setter);
+                            var getterIgnore = canGet && this.Emitter.Validator.IsExternalType(p.GetMethod);
+                            var setterIgnore = canSet && this.Emitter.Validator.IsExternalType(p.SetMethod);
                             var getterName = canGet ? Helpers.GetPropertyRef(p, this.Emitter, false, true, true) : null;
                             var setterName = canSet ? Helpers.GetPropertyRef(p, this.Emitter, true, true, true) : null;
 
@@ -848,11 +848,11 @@ namespace Bridge.Contract
 
                 if (this.Inherit)
                 {
-                    var baseTypeDefinitions = typeDef.DirectBaseTypes.Where(t => t.Kind == typeDef.Kind || (typeDef.Kind == TypeKind.Struct && t.Kind == TypeKind.Class));
+                    var baseTypes = typeDef.GetBaseTypesAndThis().Where(t => t.TypeKind == typeDef.TypeKind || (typeDef.TypeKind == TypeKind.Struct && t.TypeKind == TypeKind.Class));
 
-                    foreach (var baseTypeDef in baseTypeDefinitions)
+                    foreach (var baseTypeDef in baseTypes.Skip(1)) // Skip self
                     {
-                        list = this.GetPropertyOverloads(list, baseTypeDef.GetDefinition());
+                        list = this.GetPropertyOverloads(list, baseTypeDef);
                     }
                 }
             }
@@ -861,18 +861,18 @@ namespace Bridge.Contract
             return returnProperties;
         }
 
-        protected virtual List<IField> GetFieldOverloads(List<IField> list = null, ITypeDefinition typeDef = null)
+        protected virtual List<IFieldSymbol> GetFieldOverloads(List<IFieldSymbol> list = null, INamedTypeSymbol typeDef = null)
         {
             typeDef = typeDef ?? this.TypeDefinition;
 
             bool isTop = list == null;
-            list = list ?? new List<IField>();
+            list = list ?? new List<IFieldSymbol>();
 
             if (typeDef != null)
             {
-                var fields = typeDef.Fields.Where(f =>
+                var fields = typeDef.GetMembers().OfType<IFieldSymbol>().Where(f =>
                 {
-                    if (f.IsExplicitInterfaceImplementation)
+                    if (f.ExplicitInterfaceImplementations.Length > 0)
                     {
                         return false;
                     }
@@ -896,11 +896,11 @@ namespace Bridge.Contract
 
                 if (this.Inherit)
                 {
-                    var baseTypeDefinitions = typeDef.DirectBaseTypes.Where(t => t.Kind == typeDef.Kind || (typeDef.Kind == TypeKind.Struct && t.Kind == TypeKind.Class));
+                    var baseTypes = typeDef.GetBaseTypesAndThis().Where(t => t.TypeKind == typeDef.TypeKind || (typeDef.TypeKind == TypeKind.Struct && t.TypeKind == TypeKind.Class));
 
-                    foreach (var baseTypeDef in baseTypeDefinitions)
+                    foreach (var baseTypeDef in baseTypes.Skip(1)) // Skip self
                     {
-                        list = this.GetFieldOverloads(list, baseTypeDef.GetDefinition());
+                        list = this.GetFieldOverloads(list, baseTypeDef);
                     }
                 }
             }
@@ -909,29 +909,29 @@ namespace Bridge.Contract
             return returnFields;
         }
 
-        protected virtual List<IEvent> GetEventOverloads(List<IEvent> list = null, ITypeDefinition typeDef = null)
+        protected virtual List<IEventSymbol> GetEventOverloads(List<IEventSymbol> list = null, INamedTypeSymbol typeDef = null)
         {
             typeDef = typeDef ?? this.TypeDefinition;
 
             bool isTop = list == null;
-            list = list ?? new List<IEvent>();
+            list = list ?? new List<IEventSymbol>();
 
             if (typeDef != null)
             {
-                var events = typeDef.Events.Where(e =>
+                var events = typeDef.GetMembers().OfType<IEventSymbol>().Where(e =>
                 {
-                    if (e.IsExplicitInterfaceImplementation)
+                    if (e.ExplicitInterfaceImplementations.Length > 0)
                     {
                         return false;
                     }
 
-                    var inline = e.AddAccessor != null ? this.Emitter.GetInline(e.AddAccessor) : null;
+                    var inline = e.AddMethod != null ? this.Emitter.GetInline(e.AddMethod) : null;
                     if (!string.IsNullOrWhiteSpace(inline))
                     {
                         return false;
                     }
 
-                    inline = e.RemoveAccessor != null ? this.Emitter.GetInline(e.RemoveAccessor) : null;
+                    inline = e.RemoveMethod != null ? this.Emitter.GetInline(e.RemoveMethod) : null;
                     if (!string.IsNullOrWhiteSpace(inline))
                     {
                         return false;
@@ -941,8 +941,8 @@ namespace Bridge.Contract
                     bool? equalsByAdd = null;
                     if (e.IsStatic == this.Static)
                     {
-                        var addName = e.AddAccessor != null && e.CanAdd ? Helpers.GetEventRef(e, this.Emitter, false, true, true) : null;
-                        var removeName = e.RemoveAccessor != null && e.CanRemove ? Helpers.GetEventRef(e, this.Emitter, true, true, true) : null;
+                        var addName = e.AddMethod != null ? Helpers.GetEventRef(e, this.Emitter, false, true, true) : null;
+                        var removeName = e.RemoveMethod != null ? Helpers.GetEventRef(e, this.Emitter, true, true, true) : null;
                         var fieldName = Helpers.GetEventRef(e, this.Emitter, true, true, true, false, true);
                         if (addName != null && (addName == this.JsName || addName == this.AltJsName || addName == this.FieldJsName))
                         {
@@ -967,7 +967,7 @@ namespace Bridge.Contract
                             return false;
                         }
 
-                        if (equalsByAdd.HasValue && this.Member is IMethod && this.AltJsName == null)
+                        if (equalsByAdd.HasValue && this.Member is IMethodSymbol && this.AltJsName == null)
                         {
                             this.AltJsName = Helpers.GetEventRef(e, this.Emitter, equalsByAdd.Value, true, true);
                         }
@@ -982,11 +982,11 @@ namespace Bridge.Contract
 
                 if (this.Inherit)
                 {
-                    var baseTypeDefinitions = typeDef.DirectBaseTypes.Where(t => t.Kind == typeDef.Kind || (typeDef.Kind == TypeKind.Struct && t.Kind == TypeKind.Class));
+                    var baseTypes = typeDef.GetBaseTypesAndThis().Where(t => t.TypeKind == typeDef.TypeKind || (typeDef.TypeKind == TypeKind.Struct && t.TypeKind == TypeKind.Class));
 
-                    foreach (var baseTypeDef in baseTypeDefinitions)
+                    foreach (var baseTypeDef in baseTypes.Skip(1)) // Skip self
                     {
-                        list = this.GetEventOverloads(list, baseTypeDef.GetDefinition());
+                        list = this.GetEventOverloads(list, baseTypeDef);
                     }
                 }
             }
@@ -1032,10 +1032,10 @@ namespace Bridge.Contract
             return Regex.Replace(interfaceName, @"[\.\(\)\,]", JS.Vars.D.ToString());
         }
 
-        public static string GetInterfaceMemberName(IEmitter emitter, IMember interfaceMember, string name, string prefix, bool withoutTypeParams = false, bool isSetter = false, bool excludeTypeOnly = false)
+        public static string GetInterfaceMemberName(IEmitter emitter, ISymbol interfaceMember, string name, string prefix, bool withoutTypeParams = false, bool isSetter = false, bool excludeTypeOnly = false)
         {
             var interfaceMemberName = name ?? OverloadsCollection.Create(emitter, interfaceMember, isSetter).GetOverloadName(true, prefix);
-            var interfaceName = BridgeTypes.ToJsName(interfaceMember.DeclaringType, emitter, false, false, true, withoutTypeParams, excludeTypeOnly: excludeTypeOnly);
+            var interfaceName = BridgeTypes.ToJsName(interfaceMember.ContainingType, emitter, false, false, true, withoutTypeParams, excludeTypeOnly: excludeTypeOnly);
 
             if (interfaceName.StartsWith("\""))
             {
@@ -1055,25 +1055,20 @@ namespace Bridge.Contract
             return interfaceName + (interfaceName.EndsWith(JS.Vars.D.ToString()) ? "" : JS.Vars.D.ToString()) + interfaceMemberName;
         }
 
-        public static bool ExcludeTypeParameterForDefinition(MemberResolveResult rr)
+        public static bool ExcludeTypeParameterForDefinition(ISymbol member)
         {
-            return rr != null && OverloadsCollection.ExcludeTypeParameterForDefinition(rr.Member);
-        }
-
-        public static bool ExcludeTypeParameterForDefinition(IMember member)
-        {
-            if (member.ImplementedInterfaceMembers.Count == 0)
+            if (member.ExplicitInterfaceImplementations.Length == 0)
             {
                 return false;
             }
 
-            if (member.ImplementedInterfaceMembers.Any(im =>
+            if (member.ExplicitInterfaceImplementations.Any(im =>
                 {
-                    var typeDef = im.DeclaringTypeDefinition;
-                    var type = im.DeclaringType;
+                    var typeDef = im.ContainingType;
+                    var type = im.ContainingType;
 
                     return typeDef != null && !Helpers.IsIgnoreGeneric(typeDef) && type != null &&
-                           type.TypeArguments.Count > 0 && Helpers.IsTypeParameterType(type);
+                           type is INamedTypeSymbol namedType && namedType.TypeArguments.Length > 0 && Helpers.IsTypeParameterType(type);
                 }))
             {
                 return true;
@@ -1082,44 +1077,44 @@ namespace Bridge.Contract
             return false;
         }
 
-        public static bool NeedCreateAlias(MemberResolveResult rr)
+        public static bool NeedCreateAlias(ISymbol member)
         {
-            if (rr == null || rr.Member.ImplementedInterfaceMembers.Count == 0)
+            if (member == null || member.ExplicitInterfaceImplementations.Length == 0)
             {
                 return false;
             }
 
-            if (rr.Member.ImplementedInterfaceMembers.Count > 0 &&
-                rr.Member.ImplementedInterfaceMembers.Any(im => im.DeclaringTypeDefinition.TypeParameters.Any(tp => tp.Variance != VarianceModifier.Invariant)))
+            if (member.ExplicitInterfaceImplementations.Length > 0 &&
+                member.ExplicitInterfaceImplementations.Any(im => im.ContainingType is INamedTypeSymbol namedType && namedType.TypeParameters.Any(tp => tp.Variance != VarianceKind.None)))
             {
                 return true;
             }
 
-            if (rr.Member.IsExplicitInterfaceImplementation)
+            if (member.ExplicitInterfaceImplementations.Length > 0)
             {
-                var explicitInterfaceMember = rr.Member.ImplementedInterfaceMembers.First();
-                var typeDef = explicitInterfaceMember.DeclaringTypeDefinition;
-                var type = explicitInterfaceMember.DeclaringType;
+                var explicitInterfaceMember = member.ExplicitInterfaceImplementations.First();
+                var typeDef = explicitInterfaceMember.ContainingType;
+                var type = explicitInterfaceMember.ContainingType;
 
-                return typeDef != null && !Helpers.IsIgnoreGeneric(typeDef) && type != null && type.TypeArguments.Count > 0 && Helpers.IsTypeParameterType(type);
+                return typeDef != null && !Helpers.IsIgnoreGeneric(typeDef) && type != null && type is INamedTypeSymbol namedType && namedType.TypeArguments.Length > 0 && Helpers.IsTypeParameterType(type);
             }
 
             return true;
         }
 
-        protected virtual string GetOverloadName(IMember definition, bool skipInterfaceName = false, string prefix = null, bool withoutTypeParams = false, bool isObjectLiteral = false, bool excludeTypeOnly = false)
+        protected virtual string GetOverloadName(ISymbol definition, bool skipInterfaceName = false, string prefix = null, bool withoutTypeParams = false, bool isObjectLiteral = false, bool excludeTypeOnly = false)
         {
-            IMember interfaceMember = null;
-            if (definition.IsExplicitInterfaceImplementation)
+            ISymbol interfaceMember = null;
+            if (definition.ExplicitInterfaceImplementations.Length > 0)
             {
-                interfaceMember = definition.ImplementedInterfaceMembers.First();
+                interfaceMember = definition.ExplicitInterfaceImplementations.First();
             }
-            else if (definition.DeclaringTypeDefinition != null && definition.DeclaringTypeDefinition.Kind == TypeKind.Interface)
+            else if (definition.ContainingType != null && definition.ContainingType.TypeKind == TypeKind.Interface)
             {
                 interfaceMember = definition;
             }
 
-            if (interfaceMember != null && !skipInterfaceName && !this.Emitter.Validator.IsObjectLiteral(interfaceMember.DeclaringTypeDefinition))
+            if (interfaceMember != null && !skipInterfaceName && !this.Emitter.Validator.IsObjectLiteral(interfaceMember.ContainingType))
             {
                 return OverloadsCollection.GetInterfaceMemberName(this.Emitter, interfaceMember, null, prefix, withoutTypeParams, this.IsSetter, excludeTypeOnly);
             }
@@ -1132,47 +1127,47 @@ namespace Bridge.Contract
 
             var attr = Helpers.GetInheritedAttribute(definition, "Bridge.NameAttribute");
 
-            var iProperty = definition as IProperty;
+            var iProperty = definition as IPropertySymbol;
 
             if (attr == null && iProperty != null && !IsField)
             {
-                var acceessor = this.IsSetter ? iProperty.Setter : iProperty.Getter;
+                var accessor = this.IsSetter ? iProperty.SetMethod : iProperty.GetMethod;
 
-                if (acceessor != null)
+                if (accessor != null)
                 {
-                    attr = Helpers.GetInheritedAttribute(acceessor, "Bridge.NameAttribute");
+                    attr = Helpers.GetInheritedAttribute(accessor, "Bridge.NameAttribute");
 
                     if (attr != null)
                     {
-                        name = this.Emitter.GetEntityName(acceessor);
+                        name = this.Emitter.GetEntityName(accessor);
                     }
                 }
             }
 
             if (attr != null)
             {
-                if (!(iProperty != null || definition is IEvent))
+                if (!(iProperty != null || definition is IEventSymbol))
                 {
                     prefix = null;
                 }
             }
 
-            if (attr != null && definition.ImplementedInterfaceMembers.Count > 0)
+            if (attr != null && definition.ExplicitInterfaceImplementations.Length > 0)
             {
-                if (this.Members.Where(member => member.ImplementedInterfaceMembers.Count > 0)
-                        .Any(member => definition.ImplementedInterfaceMembers.Any(implementedInterfaceMember => member.ImplementedInterfaceMembers.Any(m => m.DeclaringTypeDefinition == implementedInterfaceMember.DeclaringTypeDefinition))))
+                if (this.Members.Where(member => member.ExplicitInterfaceImplementations.Length > 0)
+                        .Any(member => definition.ExplicitInterfaceImplementations.Any(implementedInterfaceMember => member.ExplicitInterfaceImplementations.Any(m => SymbolEqualityComparer.Default.Equals(m.ContainingType, implementedInterfaceMember.ContainingType)))))
                 {
                     attr = null;
                 }
             }
 
             bool skipSuffix = false;
-            if (definition.DeclaringTypeDefinition != null &&
-                this.Emitter.Validator.IsExternalType(definition.DeclaringTypeDefinition))
+            if (definition.ContainingType != null &&
+                this.Emitter.Validator.IsExternalType(definition.ContainingType))
             {
-                if (definition.DeclaringTypeDefinition.Kind == TypeKind.Interface)
+                if (definition.ContainingType.TypeKind == TypeKind.Interface)
                 {
-                    skipSuffix = definition.DeclaringTypeDefinition.ParentAssembly.AssemblyName != CS.NS.BRIDGE;
+                    skipSuffix = definition.ContainingAssembly.Name != CS.NS.BRIDGE;
                 }
                 else
                 {
@@ -1185,8 +1180,8 @@ namespace Bridge.Contract
                 return prefix != null ? prefix + name : name;
             }
 
-            var iDefinition = definition as IMethod;
-            var isCtor = iDefinition != null && iDefinition.IsConstructor;
+            var iDefinition = definition as IMethodSymbol;
+            var isCtor = iDefinition != null && iDefinition.MethodKind == MethodKind.Constructor;
 
             if (isCtor)
             {
@@ -1211,16 +1206,10 @@ namespace Bridge.Contract
             return prefix != null ? prefix + name : name;
         }
 
-        protected virtual IMember FindMember(EntityDeclaration entity)
+        protected virtual ISymbol FindMember(SyntaxNode entity)
         {
-            var rr = this.Emitter.Resolver.ResolveNode(entity, this.Emitter) as MemberResolveResult;
-
-            if (rr != null)
-            {
-                return rr.Member;
-            }
-
-            return null;
+            var symbolInfo = this.Emitter.Resolver.ResolveNode(entity);
+            return symbolInfo.Symbol;
         }
     }
 }
