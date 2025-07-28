@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
-using ICSharpCode.NRefactory.CSharp;
-using ICSharpCode.NRefactory.TypeSystem;
+using Microsoft.CodeAnalysis;
 
 namespace Bridge.Contract
 {
@@ -9,38 +8,38 @@ namespace Bridge.Contract
     {
         public EmitterCache()
         {
-            this.Members = new Dictionary<Tuple<IMember, bool, bool>, OverloadsCollection>();
-            this.Nodes = new Dictionary<Tuple<AstNode, bool>, OverloadsCollection>();
+            this.Members = new Dictionary<Tuple<ISymbol, bool, bool>, OverloadsCollection>();
+            this.Nodes = new Dictionary<Tuple<SyntaxNode, bool>, OverloadsCollection>();
         }
 
-        private Dictionary<Tuple<AstNode, bool>, OverloadsCollection> Nodes
+        private Dictionary<Tuple<SyntaxNode, bool>, OverloadsCollection> Nodes
         {
             get;
             set;
         }
 
-        private Dictionary<Tuple<IMember, bool, bool>, OverloadsCollection> Members
+        private Dictionary<Tuple<ISymbol, bool, bool>, OverloadsCollection> Members
         {
             get;
             set;
         }
 
-        public void AddNode(AstNode astNode, bool isSetter, OverloadsCollection overloads)
+        public void AddNode(SyntaxNode syntaxNode, bool isSetter, OverloadsCollection overloads)
         {
-            this.Nodes[Tuple.Create(astNode, isSetter)] = overloads;
+            this.Nodes[Tuple.Create(syntaxNode, isSetter)] = overloads;
         }
 
-        public bool TryGetNode(AstNode astNode, bool isSetter, out OverloadsCollection overloads)
+        public bool TryGetNode(SyntaxNode syntaxNode, bool isSetter, out OverloadsCollection overloads)
         {
-            return this.Nodes.TryGetValue(Tuple.Create(astNode, isSetter), out overloads);
+            return this.Nodes.TryGetValue(Tuple.Create(syntaxNode, isSetter), out overloads);
         }
 
-        public void AddMember(IMember member, bool isSetter, bool includeInline, OverloadsCollection overloads)
+        public void AddMember(ISymbol member, bool isSetter, bool includeInline, OverloadsCollection overloads)
         {
             this.Members[Tuple.Create(member, isSetter, includeInline)] = overloads;
         }
 
-        public bool TryGetMember(IMember member, bool isSetter, bool includeInline, out OverloadsCollection overloads)
+        public bool TryGetMember(ISymbol member, bool isSetter, bool includeInline, out OverloadsCollection overloads)
         {
             return this.Members.TryGetValue(Tuple.Create(member, isSetter, includeInline), out overloads);
         }
