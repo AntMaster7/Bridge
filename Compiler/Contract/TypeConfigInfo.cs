@@ -1,8 +1,6 @@
-using ICSharpCode.NRefactory.CSharp;
-using ICSharpCode.NRefactory.Semantics;
-using ICSharpCode.NRefactory.TypeSystem;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using System.Collections.Generic;
-using System.Globalization;
 
 namespace Bridge.Contract
 {
@@ -14,19 +12,19 @@ namespace Bridge.Contract
             set;
         }
 
-        public EntityDeclaration Entity
+        public MemberDeclarationSyntax Entity
         {
             get;
             set;
         }
 
-        public Expression Initializer
+        public ExpressionSyntax Initializer
         {
             get;
             set;
         }
 
-        public VariableInitializer VarInitializer
+        public VariableDeclaratorSyntax VarInitializer
         {
             get;
             set;
@@ -38,12 +36,12 @@ namespace Bridge.Contract
             set;
         }
 
-        public IMember InterfaceMember
+        public ISymbol InterfaceMember
         {
             get; set;
         }
 
-        public IMember DerivedMember
+        public ISymbol DerivedMember
         {
             get; set;
         }
@@ -59,22 +57,24 @@ namespace Bridge.Contract
 
             if (this.VarInitializer != null)
             {
-                var rr = emitter.Resolver.ResolveNode(this.VarInitializer, emitter) as MemberResolveResult;
-                fieldName = OverloadsCollection.Create(emitter, rr.Member).GetOverloadName(false, null, withoutTypeParams);
+                var symbolInfo = emitter.Resolver.ResolveNode(this.VarInitializer, emitter);
+                if (symbolInfo.Symbol != null)
+                {
+                    fieldName = OverloadsCollection.Create(emitter, symbolInfo.Symbol).GetOverloadName(false, null, withoutTypeParams);
+                }
             }
-            else if (this.Entity is PropertyDeclaration)
+            else if (this.Entity is PropertyDeclarationSyntax)
             {
-                fieldName = OverloadsCollection.Create(emitter, (PropertyDeclaration)this.Entity, isField: true).GetOverloadName(false, null, withoutTypeParams);
+                fieldName = OverloadsCollection.Create(emitter, (PropertyDeclarationSyntax)this.Entity, isField: true).GetOverloadName(false, null, withoutTypeParams);
             }
             else
             {
                 if (this.Entity != null)
                 {
-                    var rr = emitter.Resolver.ResolveNode(this.Entity, emitter) as MemberResolveResult;
-
-                    if (rr != null)
+                    var symbolInfo = emitter.Resolver.ResolveNode(this.Entity, emitter);
+                    if (symbolInfo.Symbol != null)
                     {
-                        fieldName = OverloadsCollection.Create(emitter, rr.Member).GetOverloadName(false, null, withoutTypeParams);
+                        fieldName = OverloadsCollection.Create(emitter, symbolInfo.Symbol).GetOverloadName(false, null, withoutTypeParams);
                     }
                 }
             }
