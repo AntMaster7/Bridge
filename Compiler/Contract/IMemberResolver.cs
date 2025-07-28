@@ -1,20 +1,17 @@
-using ICSharpCode.NRefactory.CSharp;
-using ICSharpCode.NRefactory.CSharp.Resolver;
-using ICSharpCode.NRefactory.Semantics;
-using ICSharpCode.NRefactory.TypeSystem;
+using Microsoft.CodeAnalysis;
 
 namespace Bridge.Contract
 {
     public interface IMemberResolver
     {
-        ResolveResult ResolveNode(AstNode node, ILog log);
+        SymbolInfo ResolveNode(SyntaxNode node, ILog log);
 
-        CSharpAstResolver Resolver
+        SemanticModel SemanticModel
         {
             get;
         }
 
-        ICompilation Compilation
+        Compilation Compilation
         {
             get;
         }
