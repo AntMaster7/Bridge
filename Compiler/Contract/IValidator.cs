@@ -1,4 +1,5 @@
 using ICSharpCode.NRefactory.TypeSystem;
+using Microsoft.CodeAnalysis;
 using Mono.Cecil;
 
 namespace Bridge.Contract
@@ -63,7 +64,7 @@ namespace Bridge.Contract
 
         bool IsBridgeClass(IType type);
 
-        bool IsObjectLiteral(ICSharpCode.NRefactory.TypeSystem.ITypeDefinition type);
+        bool IsObjectLiteral(ITypeSymbol type);
 
         bool IsObjectLiteral(Mono.Cecil.TypeDefinition type);
 

@@ -414,6 +414,11 @@ namespace Bridge.Contract
             return Helpers.IsKnownType(SpecialType.System_UInt64, type, compilation, allowArray) || 
                    Helpers.IsKnownType(SpecialType.System_Int64, type, compilation, allowArray);
         }
+        
+        public static bool IsNumericType(ITypeSymbol typeSymbol, IEmitter emitter)
+        {
+            return IsIntegerType(typeSymbol, emitter.Resolver.Compilation) || IsFloatType(typeSymbol, emitter.Resolver.Compilation);
+        }
 
         public static void CheckValueTypeClone(SyntaxNode syntaxNode, ITypeSymbol resolvedType, IAbstractEmitterBlock block, int insertPosition, IEmitter emitter)
         {
@@ -1680,6 +1685,55 @@ namespace Bridge.Contract
 
             sb.Append(")");
             return sb.ToString();
+        }
+
+        // Previously InheritanceHelper.GetBaseMember (NRefactory)
+        public static ISymbol GetBaseMember(ISymbol member)
+        {
+            switch (member)
+            {
+                case IMethodSymbol method:
+                    return method.OverriddenMethod;
+                
+                case IPropertySymbol property:
+                    return property.OverriddenProperty;
+                
+                case IEventSymbol eventSymbol:
+                    return eventSymbol.OverriddenEvent;
+                
+                case IFieldSymbol field:
+                    // Fields don't have overrides in the same way
+                    return null;
+                
+                default:
+                    return null;
+            }
+        }
+
+        // Add this method to the Helpers class
+        public static bool IsSubclassOf(INamedTypeSymbol derivedType, INamedTypeSymbol baseType)
+        {
+            if (derivedType == null || baseType == null)
+                return false;
+
+            var current = derivedType.BaseType;
+            while (current != null)
+            {
+                if (SymbolEqualityComparer.Default.Equals(current, baseType))
+                    return true;
+                current = current.BaseType;
+            }
+            return false;
+        }
+
+        public static IEnumerable<INamedTypeSymbol> GetBaseTypesAndThis(INamedTypeSymbol type)
+        {
+            var current = type;
+            while (current != null)
+            {
+                yield return current;
+                current = current.BaseType;
+            }
         }
     }
 }

@@ -251,7 +251,7 @@ namespace Bridge.Contract
             this.IsSetter = remove;
             this.Static = eventDeclaration.Modifiers.Any(SyntaxKind.StaticKeyword);
             this.Member = this.FindMember(eventDeclaration);
-            this.FieldJsName = Helpers.GetEventRef(this.Member, emitter, true, true, true, false, true);
+            this.FieldJsName = Helpers.GetEventRef((IEventSymbol)this.Member, emitter, true, true, true, false, true);
             this.TypeDefinition = this.Member.ContainingType;
             this.Type = this.Member.ContainingType;
             this.InitMembers();
@@ -360,14 +360,14 @@ namespace Bridge.Contract
             {
                 this.JsName = Helpers.GetPropertyRef((IPropertySymbol)member, emitter, isSetter, true, true);
                 this.AltJsName = Helpers.GetPropertyRef((IPropertySymbol)member, emitter, !isSetter, true, true);
-                var p = (IPropertySymbol) member;
+                var p = (IPropertySymbol)member;
                 this.FieldJsName = this.Emitter.GetEntityName(p);
             }
-            else if (member is IEventSymbol)
+            else if (member is IEventSymbol eventSymbol)
             {
-                this.JsName = Helpers.GetEventRef(member, emitter, isSetter, true, true);
-                this.AltJsName = Helpers.GetEventRef(member, emitter, !isSetter, true, true);
-                this.FieldJsName = Helpers.GetEventRef(member, emitter, true, true, true, false, true);
+                this.JsName = Helpers.GetEventRef(eventSymbol, emitter, isSetter, true, true);
+                this.AltJsName = Helpers.GetEventRef(eventSymbol, emitter, !isSetter, true, true);
+                this.FieldJsName = Helpers.GetEventRef(eventSymbol, emitter, true, true, true, false, true);
             }
             else
             {
@@ -427,7 +427,7 @@ namespace Bridge.Contract
 
             while (member != null && member.IsOverride && !this.IsTemplateOverride(member))
             {
-                member = InheritanceHelper.GetBaseMember(member);
+                member = Helpers.GetBaseMember(member);
             }
 
             if (member == null)
@@ -474,11 +474,11 @@ namespace Bridge.Contract
             {
                 if (!SymbolEqualityComparer.Default.Equals(m1.ContainingType, m2.ContainingType))
                 {
-                    return m1.ContainingType.IsSubclassOf(m2.ContainingType) ? 1 : -1;
+                    return Helpers.IsSubclassOf(m1.ContainingType, m2.ContainingType) ? 1 : -1;
                 }
 
-                var iCount1 = m1.ExplicitInterfaceImplementations.Length;
-                var iCount2 = m2.ExplicitInterfaceImplementations.Length;
+                var iCount1 = GetExplicitInterfaceImplementationsCount(m1);
+                var iCount2 = GetExplicitInterfaceImplementationsCount(m2);
                 if (iCount1 > 0 && iCount2 == 0)
                 {
                     return -1;
@@ -491,18 +491,21 @@ namespace Bridge.Contract
 
                 if (iCount1 > 0 && iCount2 > 0)
                 {
-                    foreach (var im1 in m1.ExplicitInterfaceImplementations)
+                    var explicitInterfaces1 = GetExplicitInterfaceImplementations(m1);
+                    var explicitInterfaces2 = GetExplicitInterfaceImplementations(m2);
+
+                    foreach (var im1 in explicitInterfaces1)
                     {
-                        foreach (var im2 in m2.ExplicitInterfaceImplementations)
+                        foreach (var im2 in explicitInterfaces2)
                         {
                             if (!SymbolEqualityComparer.Default.Equals(im1.ContainingType, im2.ContainingType))
                             {
-                                if (im1.ContainingType.IsSubclassOf(im2.ContainingType))
+                                if (Helpers.IsSubclassOf(im1.ContainingType, im2.ContainingType))
                                 {
                                     return 1;
                                 }
 
-                                if (im2.ContainingType.IsSubclassOf(im1.ContainingType))
+                                if (Helpers.IsSubclassOf(im2.ContainingType, im1.ContainingType))
                                 {
                                     return -1;
                                 }
@@ -552,6 +555,36 @@ namespace Bridge.Contract
 
                 return string.Compare(name1, name2);
             });
+        }
+
+        private static int GetExplicitInterfaceImplementationsCount(ISymbol symbol)
+        {
+            switch (symbol)
+            {
+                case IMethodSymbol method:
+                    return method.ExplicitInterfaceImplementations.Length;
+                case IPropertySymbol property:
+                    return property.ExplicitInterfaceImplementations.Length;
+                case IEventSymbol eventSymbol:
+                    return eventSymbol.ExplicitInterfaceImplementations.Length;
+                default:
+                    return 0; // Fields and other symbols don't have explicit interface implementations
+            }
+        }
+
+        private static IEnumerable<ISymbol> GetExplicitInterfaceImplementations(ISymbol symbol)
+        {
+            switch (symbol)
+            {
+                case IMethodSymbol method:
+                    return method.ExplicitInterfaceImplementations.Cast<ISymbol>();
+                case IPropertySymbol property:
+                    return property.ExplicitInterfaceImplementations.Cast<ISymbol>();
+                case IEventSymbol eventSymbol:
+                    return eventSymbol.ExplicitInterfaceImplementations.Cast<ISymbol>();
+                default:
+                    return Enumerable.Empty<ISymbol>(); // Fields and other symbols don't have explicit interface implementations
+            }
         }
 
         protected virtual int GetAccessibilityWeight(Accessibility a)
@@ -621,7 +654,7 @@ namespace Bridge.Contract
         {
             if (member.IsOverride)
             {
-                member = InheritanceHelper.GetBaseMember(member);
+                member = Helpers.GetBaseMember(member);
 
                 if (member != null)
                 {
@@ -655,13 +688,13 @@ namespace Bridge.Contract
                     this.OriginalMember = this.Member;
                 }
 
-                this.Member = InheritanceHelper.GetBaseMember(this.Member);
+                this.Member = Helpers.GetBaseMember(this.Member);
                 typeDef = this.Member.ContainingType;
             }
 
             if (typeDef != null)
             {
-                var isExternalType = this.Emitter.Validator.IsExternalType(typeDef);
+                var isExternalType = typeDef.IsExtern;
                 bool externalFound = false;
 
                 var oldIncludeInline = this.IncludeInline;
@@ -730,7 +763,7 @@ namespace Bridge.Contract
 
                 if (this.Inherit)
                 {
-                    var baseTypes = typeDef.GetBaseTypesAndThis().Where(t => t.TypeKind == typeDef.TypeKind || (typeDef.TypeKind == TypeKind.Struct && t.TypeKind == TypeKind.Class));
+                    var baseTypes = Helpers.GetBaseTypesAndThis(typeDef).Where(t => t.TypeKind == typeDef.TypeKind || (typeDef.TypeKind == TypeKind.Struct && t.TypeKind == TypeKind.Class));
 
                     foreach (var baseTypeDef in baseTypes.Skip(1)) // Skip self
                     {
@@ -739,7 +772,7 @@ namespace Bridge.Contract
                 }
             }
 
-            var returnMethods = isTop ? list.Distinct().ToList() : list;
+            var returnMethods = isTop ? list.Distinct(SymbolEqualityComparer.Default).Cast<IMethodSymbol>().ToList() : list;
             return returnMethods;
         }
 
@@ -757,7 +790,7 @@ namespace Bridge.Contract
                     this.OriginalMember = this.Member;
                 }
 
-                this.Member = InheritanceHelper.GetBaseMember(this.Member);
+                this.Member = Helpers.GetBaseMember(this.Member);
                 typeDef = this.Member.ContainingType;
             }
 
@@ -808,8 +841,8 @@ namespace Bridge.Contract
 
                         if (!eq && p.IsIndexer)
                         {
-                            var getterIgnore = canGet && this.Emitter.Validator.IsExternalType(p.GetMethod);
-                            var setterIgnore = canSet && this.Emitter.Validator.IsExternalType(p.SetMethod);
+                            var getterIgnore = canGet && p.IsExtern;
+                            var setterIgnore = canSet && p.IsExtern;
                             var getterName = canGet ? Helpers.GetPropertyRef(p, this.Emitter, false, true, true) : null;
                             var setterName = canSet ? Helpers.GetPropertyRef(p, this.Emitter, true, true, true) : null;
 
@@ -848,7 +881,7 @@ namespace Bridge.Contract
 
                 if (this.Inherit)
                 {
-                    var baseTypes = typeDef.GetBaseTypesAndThis().Where(t => t.TypeKind == typeDef.TypeKind || (typeDef.TypeKind == TypeKind.Struct && t.TypeKind == TypeKind.Class));
+                    var baseTypes = Helpers.GetBaseTypesAndThis(typeDef).Where(t => t.TypeKind == typeDef.TypeKind || (typeDef.TypeKind == TypeKind.Struct && t.TypeKind == TypeKind.Class));
 
                     foreach (var baseTypeDef in baseTypes.Skip(1)) // Skip self
                     {
@@ -857,7 +890,7 @@ namespace Bridge.Contract
                 }
             }
 
-            var returnProperties = isTop ? list.Distinct().ToList() : list;
+            var returnProperties = isTop ? list.Distinct(SymbolEqualityComparer.Default).Cast<IPropertySymbol>().ToList() : list;
             return returnProperties;
         }
 
@@ -872,7 +905,7 @@ namespace Bridge.Contract
             {
                 var fields = typeDef.GetMembers().OfType<IFieldSymbol>().Where(f =>
                 {
-                    if (f.ExplicitInterfaceImplementations.Length > 0)
+                    if (GetExplicitInterfaceImplementationsCount(f) > 0)
                     {
                         return false;
                     }
@@ -896,7 +929,7 @@ namespace Bridge.Contract
 
                 if (this.Inherit)
                 {
-                    var baseTypes = typeDef.GetBaseTypesAndThis().Where(t => t.TypeKind == typeDef.TypeKind || (typeDef.TypeKind == TypeKind.Struct && t.TypeKind == TypeKind.Class));
+                    var baseTypes = Helpers.GetBaseTypesAndThis(typeDef).Where(t => t.TypeKind == typeDef.TypeKind || (typeDef.TypeKind == TypeKind.Struct && t.TypeKind == TypeKind.Class));
 
                     foreach (var baseTypeDef in baseTypes.Skip(1)) // Skip self
                     {
@@ -905,7 +938,7 @@ namespace Bridge.Contract
                 }
             }
 
-            var returnFields = isTop ? list.Distinct().ToList() : list;
+            var returnFields = isTop ? list.Distinct(SymbolEqualityComparer.Default).Cast<IFieldSymbol>().ToList() : list;
             return returnFields;
         }
 
@@ -982,7 +1015,7 @@ namespace Bridge.Contract
 
                 if (this.Inherit)
                 {
-                    var baseTypes = typeDef.GetBaseTypesAndThis().Where(t => t.TypeKind == typeDef.TypeKind || (typeDef.TypeKind == TypeKind.Struct && t.TypeKind == TypeKind.Class));
+                    var baseTypes = Helpers.GetBaseTypesAndThis(typeDef).Where(t => t.TypeKind == typeDef.TypeKind || (typeDef.TypeKind == TypeKind.Struct && t.TypeKind == TypeKind.Class));
 
                     foreach (var baseTypeDef in baseTypes.Skip(1)) // Skip self
                     {
@@ -991,7 +1024,7 @@ namespace Bridge.Contract
                 }
             }
 
-            var returnEvents = isTop ? list.Distinct().ToList() : list;
+            var returnEvents = isTop ? list.Distinct(SymbolEqualityComparer.Default).Cast<IEventSymbol>().ToList() : list;
             return returnEvents;
         }
 
@@ -1057,12 +1090,14 @@ namespace Bridge.Contract
 
         public static bool ExcludeTypeParameterForDefinition(ISymbol member)
         {
-            if (member.ExplicitInterfaceImplementations.Length == 0)
+            var explicitInterfaceImplementations = GetExplicitInterfaceImplementations(member);
+
+            if (!explicitInterfaceImplementations.Any())
             {
                 return false;
             }
 
-            if (member.ExplicitInterfaceImplementations.Any(im =>
+            if (explicitInterfaceImplementations.Any(im =>
                 {
                     var typeDef = im.ContainingType;
                     var type = im.ContainingType;
@@ -1079,35 +1114,33 @@ namespace Bridge.Contract
 
         public static bool NeedCreateAlias(ISymbol member)
         {
-            if (member == null || member.ExplicitInterfaceImplementations.Length == 0)
+            var explicitInterfaceImplementations = GetExplicitInterfaceImplementations(member);
+            
+            if (member == null || !explicitInterfaceImplementations.Any())
             {
                 return false;
             }
 
-            if (member.ExplicitInterfaceImplementations.Length > 0 &&
-                member.ExplicitInterfaceImplementations.Any(im => im.ContainingType is INamedTypeSymbol namedType && namedType.TypeParameters.Any(tp => tp.Variance != VarianceKind.None)))
+            if (explicitInterfaceImplementations.Any(im => im.ContainingType is INamedTypeSymbol namedType && namedType.TypeParameters.Any(tp => tp.Variance != VarianceKind.None)))
             {
                 return true;
             }
 
-            if (member.ExplicitInterfaceImplementations.Length > 0)
-            {
-                var explicitInterfaceMember = member.ExplicitInterfaceImplementations.First();
-                var typeDef = explicitInterfaceMember.ContainingType;
-                var type = explicitInterfaceMember.ContainingType;
+            var explicitInterfaceMember = explicitInterfaceImplementations.First();
+            var typeDef = explicitInterfaceMember.ContainingType;
+            var type = explicitInterfaceMember.ContainingType;
 
-                return typeDef != null && !Helpers.IsIgnoreGeneric(typeDef) && type != null && type is INamedTypeSymbol namedType && namedType.TypeArguments.Length > 0 && Helpers.IsTypeParameterType(type);
-            }
-
-            return true;
+            return typeDef != null && !Helpers.IsIgnoreGeneric(typeDef) && type != null && type is INamedTypeSymbol namedType && namedType.TypeArguments.Length > 0 && Helpers.IsTypeParameterType(type);
         }
 
         protected virtual string GetOverloadName(ISymbol definition, bool skipInterfaceName = false, string prefix = null, bool withoutTypeParams = false, bool isObjectLiteral = false, bool excludeTypeOnly = false)
         {
             ISymbol interfaceMember = null;
-            if (definition.ExplicitInterfaceImplementations.Length > 0)
+            var explicitInterfaceImplementations = GetExplicitInterfaceImplementations(definition);
+            
+            if (explicitInterfaceImplementations.Any())
             {
-                interfaceMember = definition.ExplicitInterfaceImplementations.First();
+                interfaceMember = explicitInterfaceImplementations.First();
             }
             else if (definition.ContainingType != null && definition.ContainingType.TypeKind == TypeKind.Interface)
             {
@@ -1152,18 +1185,17 @@ namespace Bridge.Contract
                 }
             }
 
-            if (attr != null && definition.ExplicitInterfaceImplementations.Length > 0)
+            if (attr != null && explicitInterfaceImplementations.Any())
             {
-                if (this.Members.Where(member => member.ExplicitInterfaceImplementations.Length > 0)
-                        .Any(member => definition.ExplicitInterfaceImplementations.Any(implementedInterfaceMember => member.ExplicitInterfaceImplementations.Any(m => SymbolEqualityComparer.Default.Equals(m.ContainingType, implementedInterfaceMember.ContainingType)))))
+                if (this.Members.Where(member => GetExplicitInterfaceImplementations(member).Any())
+                        .Any(member => explicitInterfaceImplementations.Any(implementedInterfaceMember => GetExplicitInterfaceImplementations(member).Any(m => SymbolEqualityComparer.Default.Equals(m.ContainingType, implementedInterfaceMember.ContainingType)))))
                 {
                     attr = null;
                 }
             }
 
             bool skipSuffix = false;
-            if (definition.ContainingType != null &&
-                this.Emitter.Validator.IsExternalType(definition.ContainingType))
+            if (definition.ContainingType != null && definition.ContainingType.IsExtern)
             {
                 if (definition.ContainingType.TypeKind == TypeKind.Interface)
                 {
@@ -1208,7 +1240,7 @@ namespace Bridge.Contract
 
         protected virtual ISymbol FindMember(SyntaxNode entity)
         {
-            var symbolInfo = this.Emitter.Resolver.ResolveNode(entity);
+            var symbolInfo = this.Emitter.Resolver.ResolveNode(entity, this.Emitter);
             return symbolInfo.Symbol;
         }
     }
