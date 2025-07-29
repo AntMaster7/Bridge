@@ -1,6 +1,8 @@
 using Bridge.Contract.Constants;
 using ICSharpCode.NRefactory.CSharp;
 using ICSharpCode.NRefactory.TypeSystem;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Mono.Cecil;
 using Object.Net.Utilities;
 using System;
@@ -306,36 +308,17 @@ namespace Bridge.Contract
             return globalTarget;
         }
 
-        public static string ToJsName(IType type, IEmitter emitter, bool asDefinition = false, bool excludens = false, bool isAlias = false, bool skipMethodTypeParam = false, bool removeScope = true, bool nomodule = false, bool ignoreLiteralName = true, bool ignoreVirtual = false, bool excludeTypeOnly = false)
+        public static string ToJsName(ITypeSymbol typeSymbol, IEmitter emitter, bool asDefinition = false, bool excludens = false, bool isAlias = false, bool skipMethodTypeParam = false, bool removeScope = true, bool nomodule = false, bool ignoreLiteralName = true, bool ignoreVirtual = false, bool excludeTypeOnly = false)
         {
-            var itypeDef = type.GetDefinition();
-            BridgeType bridgeType = emitter.BridgeTypes.Get(type, true);
-
-            if (itypeDef != null)
+            if (typeSymbol == null)
             {
-                string globalTarget = BridgeTypes.GetGlobalTarget(itypeDef, null, removeScope);
-
-                if (globalTarget != null)
-                {
-                    if (bridgeType != null && !nomodule)
-                    {
-                        bool customName;
-                        globalTarget = BridgeTypes.AddModule(globalTarget, bridgeType, excludens, false, out customName);
-                    }
-                    return globalTarget;
-                }
+                return JS.Types.System.Object.NAME;
             }
 
-            if (itypeDef != null && itypeDef.Attributes.Any(a => a.AttributeType.FullName == "Bridge.NonScriptableAttribute"))
+            // Handle special type kinds first
+            if (typeSymbol.TypeKind == TypeKind.Array)
             {
-                throw new EmitterException(emitter.Translator.EmitNode, "Type " + type.FullName + " is marked as not usable from script");
-            }
-
-            if (type.Kind == TypeKind.Array)
-            {
-                var arrayType = type as ArrayType;
-
-                if (arrayType != null && arrayType.ElementType != null)
+                if (typeSymbol is IArrayTypeSymbol arrayType)
                 {
                     string typedArrayName;
                     if (emitter.AssemblyInfo.UseTypedArrays && (typedArrayName = Helpers.GetTypedArrayName(arrayType.ElementType)) != null)
@@ -343,16 +326,16 @@ namespace Bridge.Contract
                         return typedArrayName;
                     }
 
-                    var elementAlias = BridgeTypes.ToJsName(arrayType.ElementType, emitter, asDefinition, excludens, isAlias, skipMethodTypeParam, excludeTypeOnly: excludeTypeOnly);
+                    var elementAlias = BridgeTypes.ToJsName(arrayType.ElementType, emitter, asDefinition, excludens, isAlias, skipMethodTypeParam, removeScope, nomodule, ignoreLiteralName, ignoreVirtual, excludeTypeOnly);
 
                     if (isAlias)
                     {
-                        return $"{elementAlias}$Array{(arrayType.Dimensions > 1 ? "$" + arrayType.Dimensions : "")}";
+                        return $"{elementAlias}$Array{(arrayType.Rank > 1 ? "$" + arrayType.Rank : "")}";
                     }
 
-                    if (arrayType.Dimensions > 1)
+                    if (arrayType.Rank > 1)
                     {
-                        return string.Format(JS.Types.System.Array.TYPE + "({0}, {1})", elementAlias, arrayType.Dimensions);
+                        return string.Format(JS.Types.System.Array.TYPE + "({0}, {1})", elementAlias, arrayType.Rank);
                     }
                     return string.Format(JS.Types.System.Array.TYPE + "({0})", elementAlias);
                 }
@@ -360,114 +343,119 @@ namespace Bridge.Contract
                 return JS.Types.ARRAY;
             }
 
-            if (type.Kind == TypeKind.Delegate)
+            if (typeSymbol.TypeKind == TypeKind.Delegate)
             {
                 return JS.Types.FUNCTION;
             }
 
-            if (type.Kind == TypeKind.Dynamic)
+            if (typeSymbol.TypeKind == TypeKind.Dynamic)
             {
                 return JS.Types.System.Object.NAME;
             }
 
-            if (type is ByReferenceType)
+            // Handle special types
+            if (typeSymbol.SpecialType == SpecialType.System_Object)
             {
-                return BridgeTypes.ToJsName(((ByReferenceType)type).ElementType, emitter, asDefinition, excludens, isAlias, skipMethodTypeParam, excludeTypeOnly: excludeTypeOnly);
+                return JS.Types.System.Object.NAME;
             }
 
-            if (ignoreLiteralName)
+            if (typeSymbol.SpecialType == SpecialType.System_String)
             {
-                var isObjectLiteral = itypeDef != null && emitter.Validator.IsObjectLiteral(itypeDef);
-                var isPlainMode = isObjectLiteral && emitter.Validator.GetObjectCreateMode(emitter.GetTypeDefinition(type)) == 0;
-
-                if (isPlainMode)
-                {
-                    return "System.Object";
-                }
+                return "String";
             }
 
-            if (type.Kind == TypeKind.Anonymous)
+            if (typeSymbol.SpecialType == SpecialType.System_Boolean)
             {
-                var at = type as AnonymousType;
-                if (at != null && emitter.AnonymousTypes.ContainsKey(at))
-                {
-                    return emitter.AnonymousTypes[at].Name;
-                }
-                else
+                return "Boolean";
+            }
+
+            if (typeSymbol.SpecialType == SpecialType.System_Void)
+            {
+                return "void";
+            }
+
+            // Handle primitive numeric types
+            if (Helpers.IsNumericType(typeSymbol, emitter))
+            {
+                return "Number";
+            }
+
+            // Handle type parameters
+            if (typeSymbol.TypeKind == TypeKind.TypeParameter)
+            {
+                var typeParam = typeSymbol as ITypeParameterSymbol;
+                if (typeParam != null && ((skipMethodTypeParam || excludeTypeOnly) && typeParam.TypeParameterKind == TypeParameterKind.Method) || Helpers.IsIgnoreGeneric(typeParam, emitter))
                 {
                     return JS.Types.System.Object.NAME;
                 }
+                
+                return typeParam?.Name ?? JS.Types.System.Object.NAME;
             }
 
-            var typeParam = type as ITypeParameter;
-            if (typeParam != null)
+            // Try to get the TypeDefinition equivalent for legacy compatibility
+            var typeDefinition = emitter.GetTypeDefinition(typeSymbol);
+            if (typeDefinition != null)
             {
-                if ((skipMethodTypeParam || excludeTypeOnly) && (typeParam.OwnerType == SymbolKind.Method) || Helpers.IsIgnoreGeneric(typeParam.Owner, emitter))
+                // Check for global target
+                string globalTarget = BridgeTypes.GetGlobalTarget(typeDefinition, null, removeScope);
+                if (globalTarget != null)
                 {
-                    return JS.Types.System.Object.NAME;
+                    var bridgeType = emitter.BridgeTypes.Get(typeDefinition, true);
+                    if (bridgeType != null && !nomodule)
+                    {
+                        bool customName;
+                        globalTarget = BridgeTypes.AddModule(globalTarget, bridgeType, excludens, false, out customName);
+                    }
+                    return globalTarget;
+                }
+
+                // Check for NonScriptableAttribute
+                if (typeDefinition.CustomAttributes.Any(a => a.AttributeType.FullName == "Bridge.NonScriptableAttribute"))
+                {
+                    throw new EmitterException(emitter.Translator.EmitNode, "Type " + typeSymbol.ToDisplayString() + " is marked as not usable from script");
+                }
+
+                // Use the legacy method if we have a TypeDefinition
+                try
+                {
+                    var bridgeType = emitter.BridgeTypes.Get(typeDefinition, true);
+                    if (bridgeType?.Type != null)
+                    {
+                        return BridgeTypes.ToJsName(bridgeType.Type, emitter, asDefinition, excludens, isAlias, skipMethodTypeParam, removeScope, nomodule, ignoreLiteralName, ignoreVirtual, excludeTypeOnly);
+                    }
+                }
+                catch
+                {
+                    // Fall through to Roslyn-only handling
                 }
             }
 
-            var name = excludens ? "" : type.Namespace;
+            // Pure Roslyn handling when no TypeDefinition is available
+            var name = excludens ? "" : (typeSymbol.ContainingNamespace?.ToDisplayString() ?? "");
 
-            var hasTypeDef = bridgeType != null && bridgeType.TypeDefinition != null;
-            var isNested = false;
-            if (hasTypeDef)
+            // Handle nested types
+            //var isNested = false;
+            if (typeSymbol.ContainingType != null && !excludens)
             {
-                var typeDef = bridgeType.TypeDefinition;
+                name = BridgeTypes.ToJsName(typeSymbol.ContainingType, emitter, true, false, isAlias, skipMethodTypeParam, removeScope, nomodule, ignoreLiteralName, true, excludeTypeOnly);
+                //isNested = true;
+            }
 
-                if (typeDef.IsNested && !excludens)
-                {
-                    name = BridgeTypes.ToJsName(typeDef.DeclaringType, emitter, true, ignoreVirtual: true, nomodule: nomodule);
-                    isNested = true;
-                }
-
-                name = (string.IsNullOrEmpty(name) ? "" : (name + ".")) + BridgeTypes.ConvertName(emitter.GetTypeName(itypeDef, typeDef));
+            // Get the type name
+            string typeName;
+            if (typeDefinition != null)
+            {
+                typeName = emitter.GetTypeName(typeSymbol as INamedTypeSymbol, typeDefinition);
             }
             else
             {
-                if (type.DeclaringType != null && !excludens)
-                {
-                    name = BridgeTypes.ToJsName(type.DeclaringType, emitter, true, ignoreVirtual: true);
-                    isNested = true;
-                }
-
-                name = (string.IsNullOrEmpty(name) ? "" : (name + ".")) + BridgeTypes.ConvertName(type.Name);
+                typeName = typeSymbol.Name;
             }
 
-            bool isCustomName = false;
-            if (bridgeType != null)
-            {
-                if (nomodule)
-                {
-                    name = GetCustomName(name, bridgeType, excludens, isNested, ref isCustomName, null);
-                }
-                else
-                {
-                    name = BridgeTypes.AddModule(name, bridgeType, excludens, isNested, out isCustomName);
-                }
-            }
+            name = (string.IsNullOrEmpty(name) ? "" : (name + ".")) + BridgeTypes.ConvertName(typeName);
 
-            var tDef = type.GetDefinition();
-            var skipSuffix = tDef != null && tDef.ParentAssembly.AssemblyName != CS.NS.BRIDGE && emitter.Validator.IsExternalType(tDef) && Helpers.IsIgnoreGeneric(tDef);
-
-            if (!hasTypeDef && !isCustomName && type.TypeArguments.Count > 0 && !skipSuffix)
-            {
-                name += Helpers.PrefixDollar(type.TypeArguments.Count);
-            }
-
-            var genericSuffix = "$" + type.TypeArguments.Count;
-            if (skipSuffix && !isCustomName && type.TypeArguments.Count > 0 && name.EndsWith(genericSuffix))
-            {
-                name = name.Substring(0, name.Length - genericSuffix.Length);
-            }
-
-            if (isAlias)
-            {
-                name = OverloadsCollection.NormalizeInterfaceName(name);
-            }
-
-            if (type.TypeArguments.Count > 0 && !Helpers.IsIgnoreGeneric(type, emitter) && !asDefinition && !skipMethodTypeParam)
+            // Handle generic type parameters
+            if (typeSymbol is INamedTypeSymbol namedType && namedType.IsGenericType && !asDefinition && !skipMethodTypeParam)
             {
                 if (isAlias)
                 {
@@ -475,7 +463,8 @@ namespace Bridge.Contract
                     bool needComma = false;
                     sb.Append(JS.Vars.D);
                     bool isStr = false;
-                    foreach (var typeArg in type.TypeArguments)
+                    
+                    foreach (var typeArg in namedType.TypeArguments)
                     {
                         if (sb.ToString().EndsWith(")"))
                         {
@@ -488,8 +477,9 @@ namespace Bridge.Contract
                         }
 
                         needComma = true;
-                        var isTypeParam = typeArg.Kind == TypeKind.TypeParameter;
+                        var isTypeParam = typeArg.TypeKind == TypeKind.TypeParameter;
                         bool needGet = isTypeParam && !asDefinition && !excludeTypeOnly;
+                        
                         if (needGet)
                         {
                             if (!isStr)
@@ -500,17 +490,15 @@ namespace Bridge.Contract
                             sb.Append("\" + " + JS.Types.Bridge.GET_TYPE_ALIAS + "(");
                         }
 
-                        var typeArgName = BridgeTypes.ToJsName(typeArg, emitter, asDefinition, false, true, skipMethodTypeParam, ignoreVirtual:true, excludeTypeOnly: excludeTypeOnly);
+                        var typeArgName = BridgeTypes.ToJsName(typeArg, emitter, asDefinition, false, true, skipMethodTypeParam, removeScope, nomodule, ignoreLiteralName, true, excludeTypeOnly);
 
                         if (!needGet && typeArgName.StartsWith("\""))
                         {
                             var tName = typeArgName.Substring(1);
-
                             if (tName.EndsWith("\""))
                             {
                                 tName = tName.Remove(tName.Length - 1);
                             }
-
                             sb.Append(tName);
 
                             if (!isStr)
@@ -533,7 +521,6 @@ namespace Bridge.Contract
                     if (isStr && sb.Length >= 1)
                     {
                         var sbEnd = sb.ToString(sb.Length - 1, 1);
-
                         if (!sbEnd.EndsWith(")") && !sbEnd.EndsWith("\""))
                         {
                             sb.Append("\"");
@@ -547,37 +534,39 @@ namespace Bridge.Contract
                     StringBuilder sb = new StringBuilder(name);
                     bool needComma = false;
                     sb.Append("(");
-                    foreach (var typeArg in type.TypeArguments)
+                    
+                    foreach (var typeArg in namedType.TypeArguments)
                     {
                         if (needComma)
                         {
                             sb.Append(",");
                         }
-
                         needComma = true;
-
-                        sb.Append(BridgeTypes.ToJsName(typeArg, emitter, skipMethodTypeParam: skipMethodTypeParam, excludeTypeOnly: excludeTypeOnly));
+                        sb.Append(BridgeTypes.ToJsName(typeArg, emitter, false, false, false, skipMethodTypeParam, removeScope, nomodule, ignoreLiteralName, ignoreVirtual, excludeTypeOnly));
                     }
+                    
                     sb.Append(")");
                     name = sb.ToString();
                 }
             }
-
-            if (!ignoreVirtual && !isAlias)
+            else if (typeSymbol is INamedTypeSymbol namedTypeForSuffix && namedTypeForSuffix.IsGenericType && !asDefinition)
             {
-                var td = type.GetDefinition();
-                if (td != null && emitter.Validator.IsVirtualType(td))
+                // Add generic suffix for non-parameterized generic types
+                name += Helpers.PrefixDollar(namedTypeForSuffix.TypeArguments.Length);
+            }
+
+            if (isAlias)
+            {
+                name = OverloadsCollection.NormalizeInterfaceName(name);
+            }
+
+            // Handle virtual types
+            if (!ignoreVirtual && !isAlias && typeSymbol.TypeKind == TypeKind.Interface)
+            {
+                var externalInterface = emitter.Validator.IsExternalInterface(typeDefinition, out bool isNative);
+                if (externalInterface && !isNative)
                 {
-                    string fnName = td.Kind == TypeKind.Interface ? JS.Types.Bridge.GET_INTERFACE : JS.Types.Bridge.GET_CLASS;
-                    name = fnName + "(\"" + name + "\")";
-                }
-                else if (!isAlias && itypeDef != null && itypeDef.Kind == TypeKind.Interface)
-                {
-                    var externalInterface = emitter.Validator.IsExternalInterface(itypeDef);
-                    if (externalInterface != null && externalInterface.IsVirtual)
-                    {
-                        name = JS.Types.Bridge.GET_INTERFACE + "(\"" + name + "\")";
-                    }
+                    name = JS.Types.Bridge.GET_INTERFACE + "(\"" + name + "\")";
                 }
             }
 

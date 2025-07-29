@@ -1,28 +1,39 @@
 using Bridge.Contract.Constants;
-using ICSharpCode.NRefactory.CSharp;
-using ICSharpCode.NRefactory.Semantics;
-using ICSharpCode.NRefactory.TypeSystem;
-using ICSharpCode.NRefactory.TypeSystem.Implementation;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Mono.Cecil;
 using System;
 using System.Collections.Generic;
-using System.Data.SqlTypes;
 using System.Globalization;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
-using ICSharpCode.NRefactory.CSharp.Resolver;
-using ArrayType = ICSharpCode.NRefactory.TypeSystem.ArrayType;
 
 namespace Bridge.Contract
 {
     public static partial class Helpers
     {
-        public static void AcceptChildren(this AstNode node, IAstVisitor visitor)
+        public static void AcceptChildren(this SyntaxNode node, CSharpSyntaxVisitor visitor)
         {
-            foreach (AstNode child in node.Children)
+            foreach (SyntaxNode child in node.ChildNodes())
             {
-                child.AcceptVisitor(visitor);
+                visitor.Visit(child);
+            }
+        }
+
+        public static void AcceptChildren<T>(this SyntaxNode node, CSharpSyntaxVisitor<T> visitor)
+        {
+            foreach (SyntaxNode child in node.ChildNodes())
+            {
+                visitor.Visit(child);
+            }
+        }
+
+        public static void AcceptChildren(this SyntaxNode node, CSharpSyntaxWalker walker)
+        {
+            foreach (SyntaxNode child in node.ChildNodes())
+            {
+                walker.Visit(child);
             }
         }
 
@@ -79,8 +90,9 @@ namespace Bridge.Contract
 
         public static bool IsTypeArgInSubclass(TypeDefinition thisTypeDefinition, TypeDefinition typeArgDefinition, IEmitter emitter, bool deep = true)
         {
-            foreach (TypeReference interfaceReference in thisTypeDefinition.Interfaces)
+            foreach (InterfaceImplementation interfaceImplementation in thisTypeDefinition.Interfaces)
             {
+                var interfaceReference = interfaceImplementation.InterfaceType;
                 var gBaseType = interfaceReference as GenericInstanceType;
                 if (gBaseType != null && Helpers.HasGenericArgument(gBaseType, typeArgDefinition, emitter, deep))
                 {
@@ -204,184 +216,213 @@ namespace Bridge.Contract
             return null;
         }
 
-        public static bool IsIgnoreGeneric(ITypeDefinition type)
-        {
-            return type.Attributes.Any(a => a.AttributeType.FullName == "Bridge.IgnoreGenericAttribute") || type.DeclaringTypeDefinition != null && Helpers.IsIgnoreGeneric(type.DeclaringTypeDefinition);
-        }
-
         public static bool IsIgnoreGeneric(TypeDefinition type)
         {
             return type.CustomAttributes.Any(a => a.AttributeType.FullName == "Bridge.IgnoreGenericAttribute") || type.DeclaringType != null && Helpers.IsIgnoreGeneric(type.DeclaringType);
         }
 
-        public static bool IsIgnoreGeneric(IType type, IEmitter emitter, bool allowInTypeScript = false)
+        public static bool IsIgnoreGeneric(ITypeSymbol type, bool allowInTypeScript = false)
         {
-            var attr = type.GetDefinition().Attributes.FirstOrDefault(a => a.AttributeType.FullName == "Bridge.IgnoreGenericAttribute");
-
-            if (attr != null)
+            if (type is INamedTypeSymbol namedType)
             {
-                var member = allowInTypeScript ? attr.NamedArguments.FirstOrDefault(arg => arg.Key.Name == "AllowInTypeScript").Value : null;
+                var attrs = namedType.GetAttributes();
+                var attr = attrs.FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == "Bridge.IgnoreGenericAttribute");
 
-                if (member != null)
+                if (attr != null)
                 {
-                    return !(bool)member.ConstantValue;
+                    if (allowInTypeScript)
+                    {
+                        var allowInTsArg = attr.NamedArguments.FirstOrDefault(arg => arg.Key == "AllowInTypeScript");
+                        if (allowInTsArg.Key != null && allowInTsArg.Value.Value is bool allowValue)
+                        {
+                            return !allowValue;
+                        }
+                    }
+
+                    return true;
                 }
 
-                return true;
+                return namedType.ContainingType != null && Helpers.IsIgnoreGeneric(namedType.ContainingType, allowInTypeScript);
             }
 
-            return type.DeclaringType != null && Helpers.IsIgnoreGeneric(type.DeclaringType, emitter, allowInTypeScript);
+            // For other type symbols that aren't named types, check if they have an equivalent check
+            // Type parameters don't have attributes in the same way, so we default to false
+            return false;
         }
 
-        public static bool IsIgnoreGeneric(IEntity member, IEmitter emitter)
+        public static bool IsIgnoreGeneric(ISymbol member, IEmitter emitter)
         {
-            return emitter.Validator.HasAttribute(member.Attributes, "Bridge.IgnoreGenericAttribute");
+            return emitter.Validator.HasAttribute(member.GetAttributes(), "Bridge.IgnoreGenericAttribute");
         }
 
-        public static bool IsIgnoreGeneric(MethodDeclaration method, IEmitter emitter)
+        public static bool IsIgnoreGeneric(Microsoft.CodeAnalysis.CSharp.Syntax.MethodDeclarationSyntax method, IEmitter emitter)
         {
-            MemberResolveResult resolveResult = emitter.Resolver.ResolveNode(method, emitter) as MemberResolveResult;
-            if (resolveResult != null && resolveResult.Member != null)
+            var symbolInfo = emitter.Resolver.SemanticModel.GetDeclaredSymbol(method);
+            if (symbolInfo is IMethodSymbol methodSymbol)
             {
-                return Helpers.IsIgnoreGeneric(resolveResult.Member, emitter);
+                return Helpers.IsIgnoreGeneric(methodSymbol, emitter);
             }
 
             return false;
         }
 
-        public static bool IsIgnoreCast(AstType astType, IEmitter emitter)
+        public static bool IsIgnoreCast(Microsoft.CodeAnalysis.CSharp.Syntax.TypeSyntax typeSyntax, IEmitter emitter)
         {
             if (emitter.AssemblyInfo.IgnoreCast)
             {
                 return true;
             }
 
-            var typeDef = emitter.BridgeTypes.ToType(astType).GetDefinition();
+            var typeInfo = emitter.Resolver.SemanticModel.GetTypeInfo(typeSyntax);
+            var typeSymbol = typeInfo.Type;
 
-            if (typeDef == null)
+            if (typeSymbol == null)
             {
                 return false;
             }
 
-            if (typeDef.Kind == TypeKind.Delegate)
+            if (typeSymbol.TypeKind == TypeKind.Delegate)
             {
                 return true;
             }
 
-            var ctorAttr = emitter.Validator.GetAttribute(typeDef.Attributes, "Bridge.ConstructorAttribute");
+            var attrs = typeSymbol.GetAttributes();
+            var ctorAttr = attrs.FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == "Bridge.ConstructorAttribute");
 
-            if (ctorAttr != null)
+            if (ctorAttr != null && ctorAttr.ConstructorArguments.Length > 0)
             {
-                var inline = ctorAttr.PositionalArguments[0].ConstantValue.ToString();
-                if (Regex.Match(inline, @"\s*\{\s*\}\s*").Success)
+                var inline = ctorAttr.ConstructorArguments[0].Value?.ToString();
+                if (!string.IsNullOrEmpty(inline) && Regex.IsMatch(inline, @"\s*\{\s*\}\s*"))
                 {
                     return true;
                 }
             }
 
-            return emitter.Validator.HasAttribute(typeDef.Attributes, "Bridge.IgnoreCastAttribute") ||
-                   emitter.Validator.HasAttribute(typeDef.Attributes, "Bridge.ObjectLiteralAttribute");
+            return attrs.Any(a => a.AttributeClass?.ToDisplayString() == "Bridge.IgnoreCastAttribute") ||
+                   attrs.Any(a => a.AttributeClass?.ToDisplayString() == "Bridge.ObjectLiteralAttribute");
         }
 
-        public static bool IsIgnoreCast(ITypeDefinition typeDef, IEmitter emitter)
+        public static bool IsIgnoreCast(ITypeSymbol typeSymbol, IEmitter emitter)
         {
             if (emitter.AssemblyInfo.IgnoreCast)
             {
                 return true;
             }
 
-            if (typeDef == null)
+            if (typeSymbol == null)
             {
                 return false;
             }
 
-            if (typeDef.Kind == TypeKind.Delegate)
+            if (typeSymbol.TypeKind == TypeKind.Delegate)
             {
                 return true;
             }
 
-            var ctorAttr = emitter.Validator.GetAttribute(typeDef.Attributes, "Bridge.ConstructorAttribute");
+            var attrs = typeSymbol.GetAttributes();
+            var ctorAttr = attrs.FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == "Bridge.ConstructorAttribute");
 
-            if (ctorAttr != null)
+            if (ctorAttr != null && ctorAttr.ConstructorArguments.Length > 0)
             {
-                var inline = ctorAttr.PositionalArguments[0].ConstantValue.ToString();
-                if (Regex.Match(inline, @"\s*\{\s*\}\s*").Success)
+                var inline = ctorAttr.ConstructorArguments[0].Value?.ToString();
+                if (!string.IsNullOrEmpty(inline) && Regex.IsMatch(inline, @"\s*\{\s*\}\s*"))
                 {
                     return true;
                 }
             }
 
-            return emitter.Validator.HasAttribute(typeDef.Attributes, "Bridge.IgnoreCastAttribute");
+            return attrs.Any(a => a.AttributeClass?.ToDisplayString() == "Bridge.IgnoreCastAttribute");
         }
 
-        public static bool IsIntegerType(IType type, IMemberResolver resolver)
+        public static bool IsIntegerType(ITypeSymbol type, Compilation compilation)
         {
-            type = type.IsKnownType(KnownTypeCode.NullableOfT) ? ((ParameterizedType)type).TypeArguments[0] : type;
-
-            return type.Equals(resolver.Compilation.FindType(KnownTypeCode.Byte))
-                || type.Equals(resolver.Compilation.FindType(KnownTypeCode.SByte))
-                || type.Equals(resolver.Compilation.FindType(KnownTypeCode.Char))
-                || type.Equals(resolver.Compilation.FindType(KnownTypeCode.Int16))
-                || type.Equals(resolver.Compilation.FindType(KnownTypeCode.UInt16))
-                || type.Equals(resolver.Compilation.FindType(KnownTypeCode.Int32))
-                || type.Equals(resolver.Compilation.FindType(KnownTypeCode.UInt32))
-                || type.Equals(resolver.Compilation.FindType(KnownTypeCode.Int64))
-                || type.Equals(resolver.Compilation.FindType(KnownTypeCode.UInt64));
-        }
-
-        public static bool IsInteger32Type(IType type, IMemberResolver resolver)
-        {
-            type = type.IsKnownType(KnownTypeCode.NullableOfT) ? ((ParameterizedType)type).TypeArguments[0] : type;
-
-            return type.Equals(resolver.Compilation.FindType(KnownTypeCode.Int32))
-                || type.Equals(resolver.Compilation.FindType(KnownTypeCode.UInt32));
-        }
-
-        public static bool IsFloatType(IType type, IMemberResolver resolver)
-        {
-            type = type.IsKnownType(KnownTypeCode.NullableOfT) ? ((ParameterizedType)type).TypeArguments[0] : type;
-
-            return type.Equals(resolver.Compilation.FindType(KnownTypeCode.Decimal))
-                || type.Equals(resolver.Compilation.FindType(KnownTypeCode.Double))
-                || type.Equals(resolver.Compilation.FindType(KnownTypeCode.Single));
-        }
-
-        public static bool IsDecimalType(IType type, IMemberResolver resolver, bool allowArray = false)
-        {
-            return Helpers.IsKnownType(KnownTypeCode.Decimal, type, resolver, allowArray);
-        }
-
-        public static bool IsLongType(IType type, IMemberResolver resolver, bool allowArray = false)
-        {
-            return Helpers.IsKnownType(KnownTypeCode.Int64, type, resolver, allowArray);
-        }
-
-        public static bool IsULongType(IType type, IMemberResolver resolver, bool allowArray = false)
-        {
-            return Helpers.IsKnownType(KnownTypeCode.UInt64, type, resolver, allowArray);
-        }
-
-        public static bool Is64Type(IType type, IMemberResolver resolver, bool allowArray = false)
-        {
-            return Helpers.IsKnownType(KnownTypeCode.UInt64, type, resolver, allowArray) || Helpers.IsKnownType(KnownTypeCode.Int64, type, resolver, allowArray);
-        }
-
-        public static bool IsKnownType(KnownTypeCode typeCode, IType type, IMemberResolver resolver, bool allowArray = false)
-        {
-            if (allowArray && type.Kind == TypeKind.Array)
+            // Handle nullable types
+            if (type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T && type is INamedTypeSymbol namedType)
             {
-                var elements = (TypeWithElementType)type;
-                type = elements.ElementType;
+                type = namedType.TypeArguments[0];
             }
 
-            type = type.IsKnownType(KnownTypeCode.NullableOfT) ? ((ParameterizedType)type).TypeArguments[0] : type;
-
-            return type.Equals(resolver.Compilation.FindType(typeCode));
+            return type.SpecialType == SpecialType.System_Byte
+                || type.SpecialType == SpecialType.System_SByte
+                || type.SpecialType == SpecialType.System_Char
+                || type.SpecialType == SpecialType.System_Int16
+                || type.SpecialType == SpecialType.System_UInt16
+                || type.SpecialType == SpecialType.System_Int32
+                || type.SpecialType == SpecialType.System_UInt32
+                || type.SpecialType == SpecialType.System_Int64
+                || type.SpecialType == SpecialType.System_UInt64;
         }
 
-        public static void CheckValueTypeClone(ResolveResult resolveResult, Expression expression, IAbstractEmitterBlock block, int insertPosition)
+        public static bool IsInteger32Type(ITypeSymbol type, Compilation compilation)
         {
-            if (resolveResult == null || resolveResult.IsError)
+            // Handle nullable types
+            if (type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T && type is INamedTypeSymbol namedType)
+            {
+                type = namedType.TypeArguments[0];
+            }
+
+            return type.SpecialType == SpecialType.System_Int32
+                || type.SpecialType == SpecialType.System_UInt32;
+        }
+
+        public static bool IsFloatType(ITypeSymbol type, Compilation compilation)
+        {
+            // Handle nullable types
+            if (type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T && type is INamedTypeSymbol namedType)
+            {
+                type = namedType.TypeArguments[0];
+            }
+
+            return type.SpecialType == SpecialType.System_Decimal
+                || type.SpecialType == SpecialType.System_Double
+                || type.SpecialType == SpecialType.System_Single;
+        }
+
+        public static bool IsDecimalType(ITypeSymbol type, Compilation compilation, bool allowArray = false)
+        {
+            return Helpers.IsKnownType(SpecialType.System_Decimal, type, compilation, allowArray);
+        }
+
+        public static bool IsKnownType(SpecialType specialType, ITypeSymbol type, Compilation compilation, bool allowArray = false)
+        {
+            if (allowArray && type.TypeKind == TypeKind.Array && type is IArrayTypeSymbol arrayType)
+            {
+                type = arrayType.ElementType;
+            }
+
+            // Handle nullable types
+            if (type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T && type is INamedTypeSymbol namedType)
+            {
+                type = namedType.TypeArguments[0];
+            }
+
+            return type.SpecialType == specialType;
+        }
+
+        public static bool IsLongType(ITypeSymbol type, Compilation compilation, bool allowArray = false)
+        {
+            return Helpers.IsKnownType(SpecialType.System_Int64, type, compilation, allowArray);
+        }
+
+        public static bool IsULongType(ITypeSymbol type, Compilation compilation, bool allowArray = false)
+        {
+            return Helpers.IsKnownType(SpecialType.System_UInt64, type, compilation, allowArray);
+        }
+
+        public static bool Is64Type(ITypeSymbol type, Compilation compilation, bool allowArray = false)
+        {
+            return Helpers.IsKnownType(SpecialType.System_UInt64, type, compilation, allowArray) || 
+                   Helpers.IsKnownType(SpecialType.System_Int64, type, compilation, allowArray);
+        }
+        
+        public static bool IsNumericType(ITypeSymbol typeSymbol, IEmitter emitter)
+        {
+            return IsIntegerType(typeSymbol, emitter.Resolver.Compilation) || IsFloatType(typeSymbol, emitter.Resolver.Compilation);
+        }
+
+        public static void CheckValueTypeClone(SyntaxNode syntaxNode, ITypeSymbol resolvedType, IAbstractEmitterBlock block, int insertPosition, IEmitter emitter)
+        {
+            if (resolvedType == null)
             {
                 return;
             }
@@ -391,37 +432,36 @@ namespace Bridge.Contract
                 return;
             }
 
-            var conversion = block.Emitter.Resolver.Resolver.GetConversion(expression);
-            if (block.Emitter.Rules.Boxing == BoxingRule.Managed && (conversion.IsBoxingConversion || conversion.IsUnboxingConversion))
+            // Get conversion information using Roslyn's semantic model
+            var semanticModel = emitter.Resolver.SemanticModel;
+            var typeInfo = semanticModel.GetTypeInfo(syntaxNode);
+            var conversion = semanticModel.GetConversion(syntaxNode);
+            
+            if (block.Emitter.Rules.Boxing == BoxingRule.Managed && (conversion.IsBoxing || conversion.IsUnboxing))
             {
                 return;
             }
 
             bool writeClone = false;
-            if (resolveResult is InvocationResolveResult)
+            
+            // Check if this is a method invocation
+            if (syntaxNode.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax invocation)
             {
                 bool ret = true;
-                if (expression.Parent is InvocationExpression)
-                {
-                    var invocationExpression = (InvocationExpression)expression.Parent;
-                    if (invocationExpression.Arguments.Any(a => a == expression))
-                    {
-                        ret = false;
-                    }
-                }
-                else if (expression.Parent is AssignmentExpression)
+                if (invocation.ArgumentList?.Arguments.Any(a => a.Expression == syntaxNode) == true)
                 {
                     ret = false;
                 }
-                else if (expression.Parent is VariableInitializer)
+                else if (syntaxNode.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.AssignmentExpressionSyntax ||
+                         syntaxNode.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax)
                 {
                     ret = false;
                 }
                 else
                 {
-                    var prop = (resolveResult as MemberResolveResult)?.Member as IProperty;
-
-                    if (prop != null && prop.IsIndexer)
+                    // Check for indexer property access
+                    var symbolInfo = semanticModel.GetSymbolInfo(syntaxNode);
+                    if (symbolInfo.Symbol is IPropertySymbol prop && prop.IsIndexer)
                     {
                         ret = false;
                         writeClone = true;
@@ -434,17 +474,30 @@ namespace Bridge.Contract
                 }
             }
 
-            var rrtype = resolveResult.Type;
-            var nullable = rrtype.IsKnownType(KnownTypeCode.NullableOfT);
+            var rrtype = resolvedType;
+            var nullable = rrtype.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T;
 
-            var forEachResolveResult = resolveResult as ForEachResolveResult;
-            if (forEachResolveResult != null)
+            // Handle foreach element type
+            if (syntaxNode.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.ForEachStatementSyntax)
             {
-                rrtype = forEachResolveResult.ElementType;
+                if (rrtype is IArrayTypeSymbol arrayType)
+                {
+                    rrtype = arrayType.ElementType;
+                }
+                else if (rrtype is INamedTypeSymbol namedType && namedType.IsGenericType)
+                {
+                    // Try to get the element type from IEnumerable<T>
+                    var enumerableInterface = namedType.AllInterfaces
+                        .FirstOrDefault(i => i.OriginalDefinition.SpecialType == SpecialType.System_Collections_Generic_IEnumerable_T);
+                    if (enumerableInterface != null)
+                    {
+                        rrtype = enumerableInterface.TypeArguments[0];
+                    }
+                }
             }
 
-            var type = nullable ? ((ParameterizedType)rrtype).TypeArguments[0] : rrtype;
-            if (type.Kind == TypeKind.Struct)
+            var type = nullable && rrtype is INamedTypeSymbol nullableType ? nullableType.TypeArguments[0] : rrtype;
+            if (type.TypeKind == TypeKind.Struct)
             {
                 if (Helpers.IsImmutableStruct(block.Emitter, type))
                 {
@@ -457,39 +510,37 @@ namespace Bridge.Contract
                     return;
                 }
 
-                var memberResult = resolveResult as MemberResolveResult;
-
-                var field = memberResult != null ? memberResult.Member as DefaultResolvedField : null;
-
-                if (field != null && field.IsReadOnly)
+                // Check for readonly field
+                var symbolInfo = semanticModel.GetSymbolInfo(syntaxNode);
+                if (symbolInfo.Symbol is IFieldSymbol field && field.IsReadOnly)
                 {
                     Helpers.WriteClone(block, insertPosition, nullable);
                     return;
                 }
 
                 var isOperator = false;
-                if (expression != null &&
-                    (expression.Parent is BinaryOperatorExpression || expression.Parent is UnaryOperatorExpression))
+                if (syntaxNode != null &&
+                    (syntaxNode.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.BinaryExpressionSyntax || 
+                     syntaxNode.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.PrefixUnaryExpressionSyntax ||
+                     syntaxNode.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.PostfixUnaryExpressionSyntax))
                 {
-                    var orr = block.Emitter.Resolver.ResolveNode(expression.Parent, block.Emitter) as OperatorResolveResult;
-
-                    isOperator = orr != null && orr.UserDefinedOperatorMethod != null;
+                    var operatorSymbol = semanticModel.GetSymbolInfo(syntaxNode.Parent).Symbol as IMethodSymbol;
+                    isOperator = operatorSymbol != null && operatorSymbol.MethodKind == MethodKind.UserDefinedOperator;
                 }
 
-                if (expression == null || isOperator ||
-                    expression.Parent is NamedExpression ||
-                    expression.Parent is ObjectCreateExpression ||
-                    expression.Parent is ArrayInitializerExpression ||
-                    expression.Parent is ReturnStatement ||
-                    expression.Parent is InvocationExpression ||
-                    expression.Parent is AssignmentExpression ||
-                    expression.Parent is VariableInitializer ||
-                    expression.Parent is ForeachStatement && resolveResult is ForEachResolveResult)
+                if (syntaxNode == null || isOperator ||
+                    syntaxNode.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.ArgumentSyntax ||
+                    syntaxNode.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.ObjectCreationExpressionSyntax ||
+                    syntaxNode.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.InitializerExpressionSyntax ||
+                    syntaxNode.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.ReturnStatementSyntax ||
+                    syntaxNode.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax ||
+                    syntaxNode.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.AssignmentExpressionSyntax ||
+                    syntaxNode.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax ||
+                    syntaxNode.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.ForEachStatementSyntax)
                 {
-                    if (expression != null && expression.Parent is InvocationExpression)
+                    if (syntaxNode != null && syntaxNode.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax invocationParent)
                     {
-                        var invocationExpression = (InvocationExpression)expression.Parent;
-                        if (invocationExpression.Target == expression)
+                        if (invocationParent.Expression == syntaxNode)
                         {
                             return;
                         }
@@ -514,9 +565,9 @@ namespace Bridge.Contract
             }
         }
 
-        public static bool IsImmutableStruct(IEmitter emitter, IType type)
+        public static bool IsImmutableStruct(IEmitter emitter, ITypeSymbol type)
         {
-            if (type.Kind != TypeKind.Struct)
+            if (type.TypeKind != TypeKind.Struct)
             {
                 return true;
             }
@@ -527,9 +578,16 @@ namespace Bridge.Contract
                 return true;
             }
 
-            var mutableFields = type.GetFields(f => !f.IsReadOnly && !f.IsConst, GetMemberOptions.IgnoreInheritedMembers);
-            var autoProps = typeDef.Properties.Where(Helpers.IsAutoProperty);
-            var autoEvents = type.GetEvents(null, GetMemberOptions.IgnoreInheritedMembers);
+            // Get mutable fields using Roslyn's symbol model
+            var mutableFields = type.GetMembers().OfType<IFieldSymbol>()
+                .Where(f => !f.IsReadOnly && !f.IsConst && !f.IsStatic);
+
+            // Get auto properties using Roslyn symbols
+            var autoProps = type.GetMembers().OfType<IPropertySymbol>()
+                .Where(p => Helpers.IsAutoProperty(p, emitter));
+
+            // Get auto events
+            var autoEvents = type.GetMembers().OfType<IEventSymbol>();
 
             if (!mutableFields.Any() && !autoProps.Any() && !autoEvents.Any())
             {
@@ -538,9 +596,9 @@ namespace Bridge.Contract
             return false;
         }
 
-        public static bool IsScript(IMethod method)
+        public static bool IsScript(IMethodSymbol method)
         {
-            return method.Attributes.Any(a => a.AttributeType.FullName == CS.NS.BRIDGE + ".ScriptAttribute");
+            return method.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "Bridge.ScriptAttribute");
         }
 
         public static bool IsScript(MethodDefinition method)
@@ -548,20 +606,49 @@ namespace Bridge.Contract
             return method.CustomAttributes.Any(a => a.AttributeType.FullName == CS.NS.BRIDGE + ".ScriptAttribute");
         }
 
-        public static bool IsAutoProperty(IProperty propertyDeclaration)
+        public static bool IsAutoProperty(IPropertySymbol propertySymbol, IEmitter emitter)
         {
-            if (propertyDeclaration.CanGet && Helpers.IsScript(propertyDeclaration.Getter))
+            if (propertySymbol.GetMethod != null && Helpers.IsScript(propertySymbol.GetMethod))
             {
                 return false;
             }
 
-            if (propertyDeclaration.CanSet && Helpers.IsScript(propertyDeclaration.Setter))
+            if (propertySymbol.SetMethod != null && Helpers.IsScript(propertySymbol.SetMethod))
             {
                 return false;
             }
-            // auto properties don't have bodies
-            return (propertyDeclaration.CanGet && (!propertyDeclaration.Getter.HasBody || propertyDeclaration.Getter.BodyRegion.IsEmpty)) ||
-                   (propertyDeclaration.CanSet && (!propertyDeclaration.Setter.HasBody || propertyDeclaration.Setter.BodyRegion.IsEmpty));
+
+            // Check if it's a compiler-generated auto property
+            if (propertySymbol.GetMethod != null && 
+                propertySymbol.GetMethod.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Runtime.CompilerServices.CompilerGeneratedAttribute"))
+            {
+                return true;
+            }
+
+            if (propertySymbol.SetMethod != null && 
+                propertySymbol.SetMethod.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Runtime.CompilerServices.CompilerGeneratedAttribute"))
+            {
+                return true;
+            }
+
+            // Check for backing field pattern
+            var containingType = propertySymbol.ContainingType;
+            if (containingType != null)
+            {
+                var backingFieldName = $"<{propertySymbol.Name}>k__BackingField";
+                var hasBackingField = containingType.GetMembers().OfType<IFieldSymbol>()
+                    .Any(f => !f.IsPublic && !f.IsStatic && f.Name == backingFieldName);
+
+                if (hasBackingField)
+                {
+                    return true;
+                }
+            }
+
+            // For properties without accessors or with expression bodies, check if they don't have custom implementations
+            return (propertySymbol.GetMethod != null && propertySymbol.GetMethod.IsAbstract) ||
+                   (propertySymbol.SetMethod != null && propertySymbol.SetMethod.IsAbstract) ||
+                   propertySymbol.IsAbstract;
         }
 
         public static bool IsAutoProperty(PropertyDefinition propDef)
@@ -594,40 +681,41 @@ namespace Bridge.Contract
             return (isAdd ? JS.Funcs.Event.ADD : JS.Funcs.Event.REMOVE) + name;
         }
 
-        public static string GetEventRef(CustomEventDeclaration property, IEmitter emitter, bool remove = false, bool noOverload = false, bool ignoreInterface = false, bool withoutTypeParams = false)
+        public static string GetEventRef(Microsoft.CodeAnalysis.CSharp.Syntax.EventDeclarationSyntax eventDeclaration, IEmitter emitter, bool remove = false, bool noOverload = false, bool ignoreInterface = false, bool withoutTypeParams = false)
         {
-            MemberResolveResult resolveResult = emitter.Resolver.ResolveNode(property, emitter) as MemberResolveResult;
-            if (resolveResult != null && resolveResult.Member != null)
+            // Use semantic model to get symbol information
+            var symbolInfo = emitter.Resolver.SemanticModel.GetDeclaredSymbol(eventDeclaration);
+            if (symbolInfo is IEventSymbol eventSymbol)
             {
-                return Helpers.GetEventRef(resolveResult.Member, emitter, remove, noOverload, ignoreInterface, withoutTypeParams);
+                return Helpers.GetEventRef(eventSymbol, emitter, remove, noOverload, ignoreInterface, withoutTypeParams);
             }
 
             if (!noOverload)
             {
-                var overloads = OverloadsCollection.Create(emitter, property, remove);
+                var overloads = OverloadsCollection.Create(emitter, eventDeclaration, remove);
                 return overloads.GetOverloadName(ignoreInterface, Helpers.GetAddOrRemove(!remove), withoutTypeParams);
             }
 
-            var name = emitter.GetEntityName(property);
+            var name = emitter.GetEntityName(eventDeclaration);
             return Helpers.GetAddOrRemove(!remove, name);
         }
 
-        public static string GetEventRef(IMember property, IEmitter emitter, bool remove = false, bool noOverload = false, bool ignoreInterface = false, bool withoutTypeParams = false, bool skipPrefix = false)
+        public static string GetEventRef(IEventSymbol eventSymbol, IEmitter emitter, bool remove = false, bool noOverload = false, bool ignoreInterface = false, bool withoutTypeParams = false, bool skipPrefix = false)
         {
-            var attrName = emitter.GetEntityNameFromAttr(property, remove);
+            var attrName = emitter.GetEntityNameFromAttr(eventSymbol, remove);
 
             if (!String.IsNullOrEmpty(attrName))
             {
-                return Helpers.AddInterfacePrefix(property, emitter, ignoreInterface, attrName, remove);
+                return Helpers.AddInterfacePrefix(eventSymbol, emitter, ignoreInterface, attrName, remove);
             }
 
             if (!noOverload)
             {
-                var overloads = OverloadsCollection.Create(emitter, property, remove);
+                var overloads = OverloadsCollection.Create(emitter, eventSymbol, remove);
                 return overloads.GetOverloadName(ignoreInterface, skipPrefix ? null : Helpers.GetAddOrRemove(!remove), withoutTypeParams);
             }
 
-            var name = emitter.GetEntityName(property);
+            var name = emitter.GetEntityName(eventSymbol);
             return skipPrefix ? name : Helpers.GetAddOrRemove(!remove, name);
         }
 
@@ -636,12 +724,13 @@ namespace Bridge.Contract
             return (isSetter ? JS.Funcs.Property.SET : JS.Funcs.Property.GET) + name;
         }
 
-        public static string GetPropertyRef(PropertyDeclaration property, IEmitter emitter, bool isSetter = false, bool noOverload = false, bool ignoreInterface = false, bool withoutTypeParams = false, bool skipPrefix = true)
+        public static string GetPropertyRef(Microsoft.CodeAnalysis.CSharp.Syntax.PropertyDeclarationSyntax property, IEmitter emitter, bool isSetter = false, bool noOverload = false, bool ignoreInterface = false, bool withoutTypeParams = false, bool skipPrefix = true)
         {
-            ResolveResult resolveResult = emitter.Resolver.ResolveNode(property, emitter) as MemberResolveResult;
-            if (resolveResult != null && ((MemberResolveResult)resolveResult).Member != null)
+            // Use semantic model to get symbol information
+            var symbolInfo = emitter.Resolver.SemanticModel.GetDeclaredSymbol(property);
+            if (symbolInfo is IPropertySymbol propertySymbol)
             {
-                return Helpers.GetPropertyRef(((MemberResolveResult)resolveResult).Member, emitter, isSetter, noOverload, ignoreInterface, withoutTypeParams, skipPrefix);
+                return Helpers.GetPropertyRef(propertySymbol, emitter, isSetter, noOverload, ignoreInterface, withoutTypeParams, skipPrefix);
             }
 
             string name;
@@ -653,15 +742,16 @@ namespace Bridge.Contract
             }
 
             name = emitter.GetEntityName(property);
-            return Helpers.GetSetOrGet(isSetter, name);
+            return skipPrefix ? name : Helpers.GetSetOrGet(isSetter, name);
         }
 
-        public static string GetPropertyRef(IndexerDeclaration property, IEmitter emitter, bool isSetter = false, bool noOverload = false, bool ignoreInterface = false)
+        public static string GetPropertyRef(Microsoft.CodeAnalysis.CSharp.Syntax.IndexerDeclarationSyntax property, IEmitter emitter, bool isSetter = false, bool noOverload = false, bool ignoreInterface = false)
         {
-            ResolveResult resolveResult = emitter.Resolver.ResolveNode(property, emitter) as MemberResolveResult;
-            if (resolveResult != null && ((MemberResolveResult)resolveResult).Member != null)
+            // Use semantic model to get symbol information
+            var symbolInfo = emitter.Resolver.SemanticModel.GetDeclaredSymbol(property);
+            if (symbolInfo is IPropertySymbol propertySymbol)
             {
-                return Helpers.GetIndexerRef(((MemberResolveResult)resolveResult).Member, emitter, isSetter, noOverload, ignoreInterface);
+                return Helpers.GetIndexerRef(propertySymbol, emitter, isSetter, noOverload, ignoreInterface);
             }
 
             if (!noOverload)
@@ -674,26 +764,7 @@ namespace Bridge.Contract
             return Helpers.GetSetOrGet(isSetter, name);
         }
 
-        public static string GetIndexerRef(IMember property, IEmitter emitter, bool isSetter = false, bool noOverload = false, bool ignoreInterface = false)
-        {
-            var attrName = emitter.GetEntityNameFromAttr(property, isSetter);
-
-            if (!String.IsNullOrEmpty(attrName))
-            {
-                return Helpers.AddInterfacePrefix(property, emitter, ignoreInterface, attrName, isSetter);
-            }
-
-            if (!noOverload)
-            {
-                var overloads = OverloadsCollection.Create(emitter, property, isSetter);
-                return overloads.GetOverloadName(ignoreInterface, Helpers.GetSetOrGet(isSetter));
-            }
-
-            var name = emitter.GetEntityName(property);
-            return Helpers.GetSetOrGet(isSetter, name);
-        }
-
-        public static string GetPropertyRef(IMember property, IEmitter emitter, bool isSetter = false, bool noOverload = false, bool ignoreInterface = false, bool withoutTypeParams = false, bool skipPrefix = true)
+        public static string GetPropertyRef(IPropertySymbol property, IEmitter emitter, bool isSetter = false, bool noOverload = false, bool ignoreInterface = false, bool withoutTypeParams = false, bool skipPrefix = true)
         {
             var attrName = emitter.GetEntityNameFromAttr(property, isSetter);
 
@@ -704,7 +775,7 @@ namespace Bridge.Contract
 
             string name = null;
 
-            if (property.SymbolKind == SymbolKind.Indexer)
+            if (property.IsIndexer)
             {
                 skipPrefix = false;
             }
@@ -719,14 +790,57 @@ namespace Bridge.Contract
             return skipPrefix ? name : Helpers.GetSetOrGet(isSetter, name);
         }
 
-        private static string AddInterfacePrefix(IMember property, IEmitter emitter, bool ignoreInterface, string attrName, bool isSetter)
+        public static string GetIndexerRef(IPropertySymbol property, IEmitter emitter, bool isSetter = false, bool noOverload = false, bool ignoreInterface = false)
         {
-            IMember interfaceMember = null;
-            if (property.IsExplicitInterfaceImplementation)
+            var attrName = emitter.GetEntityNameFromAttr(property, isSetter);
+
+            if (!String.IsNullOrEmpty(attrName))
             {
-                interfaceMember = property.ImplementedInterfaceMembers.First();
+                return Helpers.AddInterfacePrefix(property, emitter, ignoreInterface, attrName, isSetter);
             }
-            else if (property.DeclaringTypeDefinition != null && property.DeclaringTypeDefinition.Kind == TypeKind.Interface)
+
+            if (!noOverload)
+            {
+                var overloads = OverloadsCollection.Create(emitter, property, isSetter);
+                return overloads.GetOverloadName(ignoreInterface, Helpers.GetSetOrGet(isSetter));
+            }
+
+            var name = emitter.GetEntityName(property);
+            return Helpers.GetSetOrGet(isSetter, name);
+        }
+
+        private static string AddInterfacePrefix(IEventSymbol eventSymbol, IEmitter emitter, bool ignoreInterface, string attrName, bool remove)
+        {
+            IEventSymbol interfaceMember = null;
+
+            // Check for explicit interface implementation
+            if (eventSymbol.ExplicitInterfaceImplementations.Any())
+            {
+                interfaceMember = eventSymbol.ExplicitInterfaceImplementations.First();
+            }
+            else if (eventSymbol.ContainingType != null && eventSymbol.ContainingType.TypeKind == TypeKind.Interface)
+            {
+                interfaceMember = eventSymbol;
+            }
+
+            if (interfaceMember != null && !ignoreInterface)
+            {
+                return OverloadsCollection.GetInterfaceMemberName(emitter, interfaceMember, attrName, null, false, remove);
+            }
+
+            return attrName;
+        }
+
+        private static string AddInterfacePrefix(IPropertySymbol property, IEmitter emitter, bool ignoreInterface, string attrName, bool isSetter)
+        {
+            IPropertySymbol interfaceMember = null;
+
+            // Check for explicit interface implementation
+            if (property.ExplicitInterfaceImplementations.Any())
+            {
+                interfaceMember = property.ExplicitInterfaceImplementations.First();
+            }
+            else if (property.ContainingType != null && property.ContainingType.TypeKind == TypeKind.Interface)
             {
                 interfaceMember = property;
             }
@@ -774,18 +888,19 @@ namespace Bridge.Contract
             return Helpers.PrefixDollar(name);
         }
 
-        public static object GetEnumValue(IEmitter emitter, IType type, object constantValue)
+        public static object GetEnumValue(IEmitter emitter, ITypeSymbol type, object constantValue)
         {
             var enumMode = Helpers.EnumEmitMode(type);
 
-            if ((emitter.Validator.IsExternalType(type.GetDefinition()) && enumMode == -1) || enumMode == 2)
+            if ((emitter.Validator.IsExternalType(emitter.GetTypeDefinition(type)) && enumMode == -1) || enumMode == 2)
             {
                 return constantValue;
             }
 
             if (enumMode >= 3 && enumMode < 7)
             {
-                var member = type.GetFields().FirstOrDefault(f => f.ConstantValue != null && f.ConstantValue.Equals(constantValue));
+                var member = type.GetMembers().OfType<IFieldSymbol>()
+                    .FirstOrDefault(f => f.IsStatic && f.HasConstantValue && f.ConstantValue != null && f.ConstantValue.Equals(constantValue));
 
                 if (member == null)
                 {
@@ -793,7 +908,7 @@ namespace Bridge.Contract
                 }
 
                 string enumStringName = member.Name;
-                var attr = emitter.GetAttribute(member.Attributes, "Bridge.NameAttribute");
+                var attr = emitter.GetAttribute(member.GetAttributes(), "Bridge.NameAttribute");
 
                 if (attr != null)
                 {
@@ -826,171 +941,160 @@ namespace Bridge.Contract
             return constantValue;
         }
 
-        public static string GetBinaryOperatorMethodName(BinaryOperatorType operatorType)
+        public static string GetBinaryOperatorMethodName(SyntaxKind operatorType)
         {
             switch (operatorType)
             {
-                case BinaryOperatorType.Any:
-                    return null;
-
-                case BinaryOperatorType.BitwiseAnd:
+                case SyntaxKind.AmpersandToken:
                     return "op_BitwiseAnd";
 
-                case BinaryOperatorType.BitwiseOr:
+                case SyntaxKind.BarToken:
                     return "op_BitwiseOr";
 
-                case BinaryOperatorType.ConditionalAnd:
+                case SyntaxKind.AmpersandAmpersandToken:
                     return "op_LogicalAnd";
 
-                case BinaryOperatorType.ConditionalOr:
+                case SyntaxKind.BarBarToken:
                     return "op_LogicalOr";
 
-                case BinaryOperatorType.ExclusiveOr:
+                case SyntaxKind.CaretToken:
                     return "op_ExclusiveOr";
 
-                case BinaryOperatorType.GreaterThan:
+                case SyntaxKind.GreaterThanToken:
                     return "op_GreaterThan";
 
-                case BinaryOperatorType.GreaterThanOrEqual:
+                case SyntaxKind.GreaterThanEqualsToken:
                     return "op_GreaterThanOrEqual";
 
-                case BinaryOperatorType.Equality:
+                case SyntaxKind.EqualsEqualsToken:
                     return "op_Equality";
 
-                case BinaryOperatorType.InEquality:
+                case SyntaxKind.ExclamationEqualsToken:
                     return "op_Inequality";
 
-                case BinaryOperatorType.LessThan:
+                case SyntaxKind.LessThanToken:
                     return "op_LessThan";
 
-                case BinaryOperatorType.LessThanOrEqual:
+                case SyntaxKind.LessThanEqualsToken:
                     return "op_LessThanOrEqual";
 
-                case BinaryOperatorType.Add:
+                case SyntaxKind.PlusToken:
                     return "op_Addition";
 
-                case BinaryOperatorType.Subtract:
+                case SyntaxKind.MinusToken:
                     return "op_Subtraction";
 
-                case BinaryOperatorType.Multiply:
+                case SyntaxKind.AsteriskToken:
                     return "op_Multiply";
 
-                case BinaryOperatorType.Divide:
+                case SyntaxKind.SlashToken:
                     return "op_Division";
 
-                case BinaryOperatorType.Modulus:
+                case SyntaxKind.PercentToken:
                     return "op_Modulus";
 
-                case BinaryOperatorType.ShiftLeft:
-                    return "LeftShift";
+                case SyntaxKind.LessThanLessThanToken:
+                    return "op_LeftShift";
 
-                case BinaryOperatorType.ShiftRight:
-                    return "RightShift";
+                case SyntaxKind.GreaterThanGreaterThanToken:
+                    return "op_RightShift";
 
-                case BinaryOperatorType.NullCoalescing:
+                case SyntaxKind.QuestionQuestionToken:
                     return null;
 
                 default:
-                    throw new ArgumentOutOfRangeException("operatorType", operatorType, null);
+                    return null;
             }
         }
 
-        public static string GetUnaryOperatorMethodName(UnaryOperatorType operatorType)
+        public static string GetUnaryOperatorMethodName(SyntaxKind operatorType)
         {
             switch (operatorType)
             {
-                case UnaryOperatorType.Any:
-                    return null;
-
-                case UnaryOperatorType.Not:
+                case SyntaxKind.ExclamationToken:
                     return "op_LogicalNot";
 
-                case UnaryOperatorType.BitNot:
+                case SyntaxKind.TildeToken:
                     return "op_OnesComplement";
 
-                case UnaryOperatorType.Minus:
+                case SyntaxKind.MinusToken:
                     return "op_UnaryNegation";
 
-                case UnaryOperatorType.Plus:
+                case SyntaxKind.PlusToken:
                     return "op_UnaryPlus";
 
-                case UnaryOperatorType.Increment:
-                case UnaryOperatorType.PostIncrement:
+                case SyntaxKind.PlusPlusToken:
                     return "op_Increment";
 
-                case UnaryOperatorType.Decrement:
-                case UnaryOperatorType.PostDecrement:
+                case SyntaxKind.MinusMinusToken:
                     return "op_Decrement";
 
-                case UnaryOperatorType.Dereference:
+                case SyntaxKind.AsteriskToken: // Dereference
                     return null;
 
-                case UnaryOperatorType.AddressOf:
+                case SyntaxKind.AmpersandToken: // AddressOf
                     return null;
 
-                case UnaryOperatorType.Await:
+                case SyntaxKind.AwaitKeyword:
                     return null;
 
                 default:
-                    throw new ArgumentOutOfRangeException("operatorType", operatorType, null);
+                    return null;
             }
         }
 
-        public static BinaryOperatorType TypeOfAssignment(AssignmentOperatorType operatorType)
+        public static SyntaxKind TypeOfAssignment(SyntaxKind operatorType)
         {
             switch (operatorType)
             {
-                case AssignmentOperatorType.Assign:
-                    return BinaryOperatorType.Any;
+                case SyntaxKind.EqualsToken:
+                    return SyntaxKind.None; // Equivalent to Any
 
-                case AssignmentOperatorType.Add:
-                    return BinaryOperatorType.Add;
+                case SyntaxKind.PlusEqualsToken:
+                    return SyntaxKind.PlusToken;
 
-                case AssignmentOperatorType.Subtract:
-                    return BinaryOperatorType.Subtract;
+                case SyntaxKind.MinusEqualsToken:
+                    return SyntaxKind.MinusToken;
 
-                case AssignmentOperatorType.Multiply:
-                    return BinaryOperatorType.Multiply;
+                case SyntaxKind.AsteriskEqualsToken:
+                    return SyntaxKind.AsteriskToken;
 
-                case AssignmentOperatorType.Divide:
-                    return BinaryOperatorType.Divide;
+                case SyntaxKind.SlashEqualsToken:
+                    return SyntaxKind.SlashToken;
 
-                case AssignmentOperatorType.Modulus:
-                    return BinaryOperatorType.Modulus;
+                case SyntaxKind.PercentEqualsToken:
+                    return SyntaxKind.PercentToken;
 
-                case AssignmentOperatorType.ShiftLeft:
-                    return BinaryOperatorType.ShiftLeft;
+                case SyntaxKind.LessThanLessThanEqualsToken:
+                    return SyntaxKind.LessThanLessThanToken;
 
-                case AssignmentOperatorType.ShiftRight:
-                    return BinaryOperatorType.ShiftRight;
+                case SyntaxKind.GreaterThanGreaterThanEqualsToken:
+                    return SyntaxKind.GreaterThanGreaterThanToken;
 
-                case AssignmentOperatorType.BitwiseAnd:
-                    return BinaryOperatorType.BitwiseAnd;
+                case SyntaxKind.AmpersandEqualsToken:
+                    return SyntaxKind.AmpersandToken;
 
-                case AssignmentOperatorType.BitwiseOr:
-                    return BinaryOperatorType.BitwiseOr;
+                case SyntaxKind.BarEqualsToken:
+                    return SyntaxKind.BarToken;
 
-                case AssignmentOperatorType.ExclusiveOr:
-                    return BinaryOperatorType.ExclusiveOr;
-
-                case AssignmentOperatorType.Any:
-                    return BinaryOperatorType.Any;
+                case SyntaxKind.CaretEqualsToken:
+                    return SyntaxKind.CaretToken;
 
                 default:
-                    throw new ArgumentOutOfRangeException("operatorType", operatorType, null);
+                    return SyntaxKind.None;
             }
         }
 
-        public static IAttribute GetInheritedAttribute(IEntity entity, string attrName)
+        public static AttributeData GetInheritedAttribute(ISymbol symbol, string attrName)
         {
-            if (entity is IMember)
+            if (symbol is IMethodSymbol || symbol is IPropertySymbol || symbol is IFieldSymbol || symbol is IEventSymbol)
             {
-                return Helpers.GetInheritedAttribute((IMember)entity, attrName);
+                return Helpers.GetInheritedAttribute((ISymbol)symbol as dynamic, attrName);
             }
 
-            foreach (var attr in entity.Attributes)
+            foreach (var attr in symbol.GetAttributes())
             {
-                if (attr.AttributeType.FullName == attrName)
+                if (attr.AttributeClass?.ToDisplayString() == attrName)
                 {
                     return attr;
                 }
@@ -998,28 +1102,27 @@ namespace Bridge.Contract
             return null;
         }
 
-        public static IAttribute GetInheritedAttribute(IMember member, string attrName)
+        public static AttributeData GetInheritedAttribute(IMethodSymbol method, string attrName)
         {
-            foreach (var attr in member.Attributes)
+            foreach (var attr in method.GetAttributes())
             {
-                if (attr.AttributeType.FullName == attrName)
+                if (attr.AttributeClass?.ToDisplayString() == attrName)
                 {
                     return attr;
                 }
             }
 
-            if (member.IsOverride)
+            if (method.IsOverride)
             {
-                member = InheritanceHelper.GetBaseMember(member);
-
-                if (member != null)
+                var baseMember = method.OverriddenMethod;
+                if (baseMember != null)
                 {
-                    return Helpers.GetInheritedAttribute(member, attrName);
+                    return Helpers.GetInheritedAttribute(baseMember, attrName);
                 }
             }
-            else if (member.ImplementedInterfaceMembers != null && member.ImplementedInterfaceMembers.Count > 0)
+            else if (method.ExplicitInterfaceImplementations.Any())
             {
-                foreach (var interfaceMember in member.ImplementedInterfaceMembers)
+                foreach (var interfaceMember in method.ExplicitInterfaceImplementations)
                 {
                     var attr = Helpers.GetInheritedAttribute(interfaceMember, attrName);
                     if (attr != null)
@@ -1032,21 +1135,100 @@ namespace Bridge.Contract
             return null;
         }
 
-        public static IAttribute GetInheritedAttribute(ITypeDefinition typeDef, string attrName)
+        public static AttributeData GetInheritedAttribute(IPropertySymbol property, string attrName)
         {
-            foreach (var attr in typeDef.Attributes)
+            foreach (var attr in property.GetAttributes())
             {
-                if (attr.AttributeType.FullName == attrName)
+                if (attr.AttributeClass?.ToDisplayString() == attrName)
                 {
                     return attr;
                 }
             }
 
-            var baseType = typeDef.DirectBaseTypes.Where(t => t.Kind != TypeKind.Interface).FirstOrDefault();
-
-            if (baseType != null)
+            if (property.IsOverride)
             {
-                return Helpers.GetInheritedAttribute(baseType.GetDefinition(), attrName);
+                var baseMember = property.OverriddenProperty;
+                if (baseMember != null)
+                {
+                    return Helpers.GetInheritedAttribute(baseMember, attrName);
+                }
+            }
+            else if (property.ExplicitInterfaceImplementations.Any())
+            {
+                foreach (var interfaceMember in property.ExplicitInterfaceImplementations)
+                {
+                    var attr = Helpers.GetInheritedAttribute(interfaceMember, attrName);
+                    if (attr != null)
+                    {
+                        return attr;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        public static AttributeData GetInheritedAttribute(IEventSymbol eventSymbol, string attrName)
+        {
+            foreach (var attr in eventSymbol.GetAttributes())
+            {
+                if (attr.AttributeClass?.ToDisplayString() == attrName)
+                {
+                    return attr;
+                }
+            }
+
+            if (eventSymbol.IsOverride)
+            {
+                var baseMember = eventSymbol.OverriddenEvent;
+                if (baseMember != null)
+                {
+                    return Helpers.GetInheritedAttribute(baseMember, attrName);
+                }
+            }
+            else if (eventSymbol.ExplicitInterfaceImplementations.Any())
+            {
+                foreach (var interfaceMember in eventSymbol.ExplicitInterfaceImplementations)
+                {
+                    var attr = Helpers.GetInheritedAttribute(interfaceMember, attrName);
+                    if (attr != null)
+                    {
+                        return attr;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        public static AttributeData GetInheritedAttribute(IFieldSymbol field, string attrName)
+        {
+            foreach (var attr in field.GetAttributes())
+            {
+                if (attr.AttributeClass?.ToDisplayString() == attrName)
+                {
+                    return attr;
+                }
+            }
+
+            // Fields don't have inheritance like methods/properties, so we just return null
+            return null;
+        }
+
+        public static AttributeData GetInheritedAttribute(INamedTypeSymbol typeSymbol, string attrName)
+        {
+            foreach (var attr in typeSymbol.GetAttributes())
+            {
+                if (attr.AttributeClass?.ToDisplayString() == attrName)
+                {
+                    return attr;
+                }
+            }
+
+            var baseType = typeSymbol.BaseType;
+            if (baseType != null && baseType.TypeKind != TypeKind.Interface)
+            {
+                return Helpers.GetInheritedAttribute(baseType, attrName);
             }
 
             return null;
@@ -1081,35 +1263,49 @@ namespace Bridge.Contract
             return null;
         }
 
-        public static string GetTypedArrayName(IType elementType)
+       public static string GetTypedArrayName(ITypeSymbol elementType)
         {
-            switch (elementType.FullName)
+            if (elementType == null)
             {
-                case CS.Types.System_Byte:
+                return null;
+            }
+
+            // Handle nullable types by getting the underlying type
+            if (elementType.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T && elementType is INamedTypeSymbol namedType)
+            {
+                elementType = namedType.TypeArguments[0];
+            }
+
+            // Use SpecialType for built-in types instead of string comparison
+            switch (elementType.SpecialType)
+            {
+                case SpecialType.System_Byte:
                     return JS.Types.Uint8Array;
 
-                case CS.Types.System_SByte:
+                case SpecialType.System_SByte:
                     return JS.Types.Int8Array;
 
-                case CS.Types.System_Int16:
+                case SpecialType.System_Int16:
                     return JS.Types.Int16Array;
 
-                case CS.Types.System_UInt16:
+                case SpecialType.System_UInt16:
                     return JS.Types.Uint16Array;
 
-                case CS.Types.System_Int32:
+                case SpecialType.System_Int32:
                     return JS.Types.Int32Array;
 
-                case CS.Types.System_UInt32:
+                case SpecialType.System_UInt32:
                     return JS.Types.Uint32Array;
 
-                case CS.Types.System_Single:
+                case SpecialType.System_Single:
                     return JS.Types.Float32Array;
 
-                case CS.Types.System_Double:
+                case SpecialType.System_Double:
                     return JS.Types.Float64Array;
+
+                default:
+                    return null;
             }
-            return null;
         }
 
         public static string PrefixDollar(params object[] parts)
@@ -1132,25 +1328,28 @@ namespace Bridge.Contract
             return s;
         }
 
-        public static bool IsNonScriptable(ITypeDefinition type)
+        public static bool IsNonScriptable(ISymbol type)
         {
             return Helpers.GetInheritedAttribute(type, "Bridge.NonScriptableAttribute") != null;
         }
 
-        public static bool IsNonScriptable(IEntity entity)
+        //public static bool IsNonScriptable(IEntity entity)
+        //{
+        //    return Helpers.GetInheritedAttribute(entity, "Bridge.NonScriptableAttribute") != null;
+        //}
+
+        public static bool IsEntryPointMethod(IEmitter emitter, Microsoft.CodeAnalysis.CSharp.Syntax.MethodDeclarationSyntax methodDeclaration)
         {
-            return Helpers.GetInheritedAttribute(entity, "Bridge.NonScriptableAttribute") != null;
+            var symbolInfo = emitter.Resolver.SemanticModel.GetDeclaredSymbol(methodDeclaration);
+            if (symbolInfo is IMethodSymbol methodSymbol)
+            {
+                return Helpers.IsEntryPointMethod(methodSymbol);
+            }
+
+            return false;
         }
 
-        public static bool IsEntryPointMethod(IEmitter emitter, MethodDeclaration methodDeclaration)
-        {
-            var member_rr = emitter.Resolver.ResolveNode(methodDeclaration, emitter) as MemberResolveResult;
-            IMethod method = member_rr != null ? member_rr.Member as IMethod : null;
-
-            return Helpers.IsEntryPointMethod(method);
-        }
-
-        public static bool IsEntryPointMethod(IMethod method)
+        public static bool IsEntryPointMethod(IMethodSymbol method)
         {
             if (method != null && method.Name == CS.Methods.AUTO_STARTUP_METHOD_NAME &&
                 method.IsStatic &&
@@ -1158,9 +1357,9 @@ namespace Bridge.Contract
                 Helpers.IsEntryPointCandidate(method))
             {
                 bool isReady = false;
-                foreach (var attr in method.Attributes)
+                foreach (var attr in method.GetAttributes())
                 {
-                    if (attr.AttributeType.FullName == CS.Attributes.READY_ATTRIBUTE_NAME)
+                    if (attr.AttributeClass?.ToDisplayString() == CS.Attributes.READY_ATTRIBUTE_NAME)
                     {
                         isReady = true;
                         break;
@@ -1176,71 +1375,129 @@ namespace Bridge.Contract
             return false;
         }
 
-        public static bool IsEntryPointCandidate(IEmitter emitter, MethodDeclaration methodDeclaration)
+        public static bool IsEntryPointCandidate(IEmitter emitter, Microsoft.CodeAnalysis.CSharp.Syntax.MethodDeclarationSyntax methodDeclaration)
         {
             if (methodDeclaration == null)
             {
                 return false;
             }
 
-            var m_rr = emitter.Resolver.ResolveNode(methodDeclaration, emitter) as MemberResolveResult;
-
-            if (m_rr == null || !(m_rr.Member is IMethod))
+            var symbolInfo = emitter.Resolver.SemanticModel.GetDeclaredSymbol(methodDeclaration);
+            if (symbolInfo is IMethodSymbol methodSymbol)
             {
+                return Helpers.IsEntryPointCandidate(methodSymbol);
+            }
+
+            return false;
+        }
+
+        public static bool IsEntryPointCandidate(IMethodSymbol method)
+        {
+            if (method.Name != CS.Methods.AUTO_STARTUP_METHOD_NAME || !method.IsStatic || 
+                method.ContainingType.TypeParameters.Length > 0 || method.TypeParameters.Length > 0)
+            {
+                // Must be a static, non-generic Main
                 return false;
             }
 
-            var m = (IMethod)m_rr.Member;
-
-            return Helpers.IsEntryPointCandidate(m);
-        }
-
-        public static bool IsEntryPointCandidate(IMethod m)
-        {
-            if (m.Name != CS.Methods.AUTO_STARTUP_METHOD_NAME || !m.IsStatic || m.DeclaringTypeDefinition.TypeParameterCount > 0 ||
-                m.TypeParameters.Count > 0) // Must be a static, non-generic Main
-                return false;
-            if (!m.ReturnType.IsKnownType(KnownTypeCode.Void) && !m.ReturnType.IsKnownType(KnownTypeCode.Int32) &&
-                !(m.IsAsync && (m.ReturnType.IsKnownType(KnownTypeCode.Task) || m.ReturnType.FullName == "System.Threading.Tasks.Task" && m.ReturnType.TypeParameterCount == 1 && m.ReturnType.TypeArguments[0].IsKnownType(KnownTypeCode.Int32))))
-                // Must return void, int or be async and return a Task<int>.
-                return false;
-            if (m.Parameters.Count == 0) // Can have 0 parameters.
-                return true;
-            if (m.Parameters.Count > 1) // May not have more than 1 parameter.
-                return false;
-            if (m.Parameters[0].IsRef || m.Parameters[0].IsOut) // The single parameter must not be ref or out.
-                return false;
-
-            var at = m.Parameters[0].Type as ArrayType;
-            return at != null && at.Dimensions == 1 && at.ElementType.IsKnownType(KnownTypeCode.String);
-            // The single parameter must be a one-dimensional array of strings.
-        }
-
-        public static bool IsTypeParameterType(IType type)
-        {
-            var typeDef = type.GetDefinition();
-            if (typeDef != null && Helpers.IsIgnoreGeneric(typeDef))
+            // Check return type: must be void, int, or async Task/Task<int>
+            if (method.ReturnType.SpecialType != SpecialType.System_Void && 
+                method.ReturnType.SpecialType != SpecialType.System_Int32)
             {
-                return false;
-            }
-            return type.TypeArguments.Any(Helpers.HasTypeParameters);
-        }
-
-        public static bool HasTypeParameters(IType type)
-        {
-            if (type.Kind == TypeKind.TypeParameter)
-            {
-                return true;
-            }
-
-            if (type.TypeArguments.Count > 0)
-            {
-                foreach (var typeArgument in type.TypeArguments)
+                // Check for async Task or Task<int>
+                if (method.IsAsync)
                 {
-                    var typeDef = typeArgument.GetDefinition();
-                    if (typeDef != null && Helpers.IsIgnoreGeneric(typeDef))
+                    var returnTypeName = method.ReturnType.ToDisplayString();
+                    if (returnTypeName == "System.Threading.Tasks.Task")
                     {
-                        continue;
+                        // async Task Main() is valid
+                    }
+                    else if (method.ReturnType is INamedTypeSymbol namedReturnType && 
+                             namedReturnType.Name == "Task" && 
+                             namedReturnType.ContainingNamespace.ToDisplayString() == "System.Threading.Tasks" &&
+                             namedReturnType.TypeArguments.Length == 1 && 
+                             namedReturnType.TypeArguments[0].SpecialType == SpecialType.System_Int32)
+                    {
+                        // async Task<int> Main() is valid
+                    }
+                    else
+                    {
+                        return false;
+                    }
+                }
+                else
+                {
+                    return false;
+                }
+            }
+
+            // Check parameter count
+            if (method.Parameters.Length == 0)
+            {
+                // Can have 0 parameters
+                return true;
+            }
+            
+            if (method.Parameters.Length > 1)
+            {
+                // May not have more than 1 parameter
+                return false;
+            }
+
+            var parameter = method.Parameters[0];
+            
+            // The single parameter must not be ref or out
+            if (parameter.RefKind == RefKind.Ref || parameter.RefKind == RefKind.Out)
+            {
+                return false;
+            }
+
+            // The single parameter must be a one-dimensional array of strings
+            if (parameter.Type is IArrayTypeSymbol arrayType)
+            {
+                return arrayType.Rank == 1 && arrayType.ElementType.SpecialType == SpecialType.System_String;
+            }
+
+            return false;
+        }
+
+        public static bool IsTypeParameterType(ITypeSymbol type)
+        {
+            if (type is INamedTypeSymbol namedType)
+            {
+                var typeDef = namedType.OriginalDefinition;
+                if (typeDef != null && Helpers.IsIgnoreGeneric(typeDef))
+                {
+                    return false;
+                }
+            }
+
+            if (type is INamedTypeSymbol genericType && genericType.IsGenericType)
+            {
+                return genericType.TypeArguments.Any(Helpers.HasTypeParameters);
+            }
+
+            return false;
+        }
+
+        public static bool HasTypeParameters(ITypeSymbol type)
+        {
+            if (type.TypeKind == TypeKind.TypeParameter)
+            {
+                return true;
+            }
+
+            if (type is INamedTypeSymbol namedType && namedType.IsGenericType)
+            {
+                foreach (var typeArgument in namedType.TypeArguments)
+                {
+                    if (typeArgument is INamedTypeSymbol argNamedType)
+                    {
+                        var typeDef = argNamedType.OriginalDefinition;
+                        if (typeDef != null && Helpers.IsIgnoreGeneric(typeDef))
+                        {
+                            continue;
+                        }
                     }
 
                     if (Helpers.HasTypeParameters(typeArgument))
@@ -1254,59 +1511,47 @@ namespace Bridge.Contract
         }
 
         private static Regex validIdentifier = new Regex("^[$A-Z_][0-9A-Z_$]*$", RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
         public static bool IsValidIdentifier(string name)
         {
             return Helpers.validIdentifier.IsMatch(name);
         }
 
-        public static int EnumEmitMode(ITypeDefinition type)
+        public static int EnumEmitMode(ITypeSymbol type)
         {
             string enumAttr = "Bridge.EnumAttribute";
             int result = 7;
-            type.Attributes.Any(attr =>
-            {
-                if (attr.Constructor != null && attr.Constructor.DeclaringType.FullName == enumAttr && attr.PositionalArguments.Count > 0)
-                {
-                    result = (int)attr.PositionalArguments.First().ConstantValue;
-                    return true;
-                }
 
-                return false;
-            });
+            var namedType = type as INamedTypeSymbol;
+            if (namedType != null)
+            {
+                namedType.GetAttributes().Any(attr =>
+                {
+                    if (attr.AttributeClass?.ToDisplayString() == enumAttr && attr.ConstructorArguments.Length > 0)
+                    {
+                        result = (int)attr.ConstructorArguments.First().Value;
+                        return true;
+                    }
+
+                    return false;
+                });
+            }
 
             return result;
         }
 
-        public static int EnumEmitMode(IType type)
-        {
-            string enumAttr = "Bridge.EnumAttribute";
-            int result = 7;
-            type.GetDefinition().Attributes.Any(attr =>
-            {
-                if (attr.Constructor != null && attr.Constructor.DeclaringType.FullName == enumAttr && attr.PositionalArguments.Count > 0)
-                {
-                    result = (int)attr.PositionalArguments.First().ConstantValue;
-                    return true;
-                }
-
-                return false;
-            });
-
-            return result;
-        }
-
-        public static bool IsValueEnum(IType type)
+        public static bool IsValueEnum(ITypeSymbol type)
         {
             return Helpers.EnumEmitMode(type) == 2;
         }
 
-        public static bool IsNameEnum(IType type)
+        public static bool IsNameEnum(ITypeSymbol type)
         {
             var enumEmitMode = Helpers.EnumEmitMode(type);
             return enumEmitMode == 1 || enumEmitMode > 6;
         }
 
-        public static bool IsStringNameEnum(IType type)
+        public static bool IsStringNameEnum(ITypeSymbol type)
         {
             var mode = Helpers.EnumEmitMode(type);
             return mode >= 3 && mode <= 6;
@@ -1317,7 +1562,7 @@ namespace Bridge.Contract
             return JS.Reserved.StaticNames.Any(n => String.Equals(name, n, ignoreCase ? StringComparison.InvariantCultureIgnoreCase : StringComparison.InvariantCulture));
         }
 
-        public static string GetFunctionName(NamedFunctionMode mode, IMember member, IEmitter emitter, bool isSetter = false)
+        public static string GetFunctionName(NamedFunctionMode mode, ISymbol member, IEmitter emitter, bool isSetter = false)
         {
             var overloads = OverloadsCollection.Create(emitter, member, isSetter);
             string name = null;
@@ -1329,13 +1574,13 @@ namespace Bridge.Contract
                     name = overloads.GetOverloadName(false, null, true);
                     break;
                 case NamedFunctionMode.FullName:
-                    var td = member.DeclaringTypeDefinition;
+                    var td = member.ContainingType;
                     name = td != null ? BridgeTypes.ToJsName(td, emitter, true) : "";
                     name = name.Replace(".", "_");
                     name += "_" + overloads.GetOverloadName(false, null, true);
                     break;
                 case NamedFunctionMode.ClassName:
-                    var t = member.DeclaringType;
+                    var t = member.ContainingType;
                     name = BridgeTypes.ToJsName(t, emitter, true, true);
                     name = name.Replace(".", "_");
                     name += "_" + overloads.GetOverloadName(false, null, true);
@@ -1346,11 +1591,11 @@ namespace Bridge.Contract
 
             if (name != null)
             {
-                if (member is IProperty)
+                if (member is IPropertySymbol)
                 {
                     name = name + "_" + (isSetter ? "set" : "get");
                 }
-                else if (member is IEvent)
+                else if (member is IEventSymbol)
                 {
                     name = name + "_" + (isSetter ? "remove" : "add");
                 }
@@ -1364,7 +1609,7 @@ namespace Bridge.Contract
             return template.IndexOf("{this}", StringComparison.Ordinal) > -1 || template.IndexOf("{$}", StringComparison.Ordinal) > -1;
         }
 
-        public static string ConvertTokens(IEmitter emitter, string template, IMember member)
+        public static string ConvertTokens(IEmitter emitter, string template, ISymbol member)
         {
             string name = OverloadsCollection.Create(emitter, member).GetOverloadName(true);
             return template.Replace("{@}", name).Replace("{$}", "{this}." + name);
@@ -1375,13 +1620,13 @@ namespace Bridge.Contract
             return name.Replace("{@}", replacer).Replace("{$}", replacer);
         }
 
-        public static string ReplaceThis(IEmitter emitter, string template, string replacer, IMember member)
+        public static string ReplaceThis(IEmitter emitter, string template, string replacer, ISymbol member)
         {
             template = Helpers.ConvertTokens(emitter, template, member);
             return template.Replace("{this}", replacer);
         }
 
-        public static string DelegateToTemplate(string tpl, IMethod method, IEmitter emitter)
+        public static string DelegateToTemplate(string tpl, IMethodSymbol method, IEmitter emitter)
         {
             bool addThis = !method.IsStatic;
 
@@ -1395,7 +1640,7 @@ namespace Bridge.Contract
                 comma = true;
             }
 
-            if (!Helpers.IsIgnoreGeneric(method, emitter) && method.TypeArguments.Count > 0)
+            if (!Helpers.IsIgnoreGeneric(method, emitter) && method.TypeArguments.Length > 0)
             {
                 foreach (var typeParameter in method.TypeArguments)
                 {
@@ -1404,7 +1649,7 @@ namespace Bridge.Contract
                         sb.Append(", ");
                     }
 
-                    if (typeParameter.Kind == TypeKind.TypeParameter)
+                    if (typeParameter.TypeKind == TypeKind.TypeParameter)
                     {
                         sb.Append("{");
                         sb.Append(typeParameter.Name);
@@ -1428,7 +1673,7 @@ namespace Bridge.Contract
                 sb.Append("{");
 
                 if (parameter.IsParams &&
-                    method.Attributes.Any(a => a.AttributeType.FullName == "Bridge.ExpandParamsAttribute"))
+                    method.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "Bridge.ExpandParamsAttribute"))
                 {
                     sb.Append("*");
                 }
@@ -1440,6 +1685,55 @@ namespace Bridge.Contract
 
             sb.Append(")");
             return sb.ToString();
+        }
+
+        // Previously InheritanceHelper.GetBaseMember (NRefactory)
+        public static ISymbol GetBaseMember(ISymbol member)
+        {
+            switch (member)
+            {
+                case IMethodSymbol method:
+                    return method.OverriddenMethod;
+                
+                case IPropertySymbol property:
+                    return property.OverriddenProperty;
+                
+                case IEventSymbol eventSymbol:
+                    return eventSymbol.OverriddenEvent;
+                
+                case IFieldSymbol field:
+                    // Fields don't have overrides in the same way
+                    return null;
+                
+                default:
+                    return null;
+            }
+        }
+
+        // Add this method to the Helpers class
+        public static bool IsSubclassOf(INamedTypeSymbol derivedType, INamedTypeSymbol baseType)
+        {
+            if (derivedType == null || baseType == null)
+                return false;
+
+            var current = derivedType.BaseType;
+            while (current != null)
+            {
+                if (SymbolEqualityComparer.Default.Equals(current, baseType))
+                    return true;
+                current = current.BaseType;
+            }
+            return false;
+        }
+
+        public static IEnumerable<INamedTypeSymbol> GetBaseTypesAndThis(INamedTypeSymbol type)
+        {
+            var current = type;
+            while (current != null)
+            {
+                yield return current;
+                current = current.BaseType;
+            }
         }
     }
 }
